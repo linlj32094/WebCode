@@ -38,7 +38,7 @@ public class CliToolsOption
     public int WorkspaceExpirationHours { get; set; } = 24;
 
     /// <summary>
-    /// npm 全局包安装目录路径,用于CLI工具的基础路径
+    /// npm 全局包安装目录路径,用于CLI工具的基础路径（可选，留空则自动检测）
     /// </summary>
     public string NpmGlobalPath { get; set; } = string.Empty;
 }

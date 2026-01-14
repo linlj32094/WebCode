@@ -1321,22 +1321,24 @@ public class CliExecutorService : ICliExecutorService
             return command;
         }
 
-        // 如果配置了npm目录,且命令看起来像是npm安装的CLI工具(以.cmd或.bat结尾)
-        if (!string.IsNullOrWhiteSpace(_options.NpmGlobalPath))
+        // Windows系统下,尝试解析npm安装的CLI工具
+        if (OperatingSystem.IsWindows() && 
+            (command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || 
+             command.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
+             !command.Contains("."))) // 没有扩展名的,也可能是npm工具
         {
-            // Windows系统下,npm CLI工具通常是.cmd文件
-            if (OperatingSystem.IsWindows() && 
-                (command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || 
-                 command.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
-                 !command.Contains("."))) // 没有扩展名的,也可能是npm工具
+            // 确保命令有.cmd扩展名
+            var cmdFileName = command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || 
+                              command.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)
+                ? command 
+                : command + ".cmd";
+            
+            // 尝试从配置或自动检测获取npm全局路径
+            var npmGlobalPath = GetNpmGlobalPath();
+            
+            if (!string.IsNullOrWhiteSpace(npmGlobalPath))
             {
-                // 确保命令有.cmd扩展名
-                var cmdFileName = command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || 
-                                  command.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)
-                    ? command 
-                    : command + ".cmd";
-                
-                var fullPath = Path.Combine(_options.NpmGlobalPath, cmdFileName);
+                var fullPath = Path.Combine(npmGlobalPath, cmdFileName);
                 
                 // 检查文件是否存在,如果存在则使用完整路径
                 if (File.Exists(fullPath))
@@ -1345,12 +1347,93 @@ public class CliExecutorService : ICliExecutorService
                     return fullPath;
                 }
                 
-                _logger.LogWarning("npm目录中未找到命令: {FullPath}, 使用原始命令: {Command}", fullPath, command);
+                _logger.LogDebug("npm目录中未找到命令: {FullPath}, 尝试使用系统PATH", fullPath);
             }
         }
 
         // 否则返回原始命令(假设是系统PATH中的命令)
         return command;
+    }
+
+    /// <summary>
+    /// 获取NPM全局安装路径（优先使用配置的路径，如果未配置则自动检测）
+    /// </summary>
+    private string? GetNpmGlobalPath()
+    {
+        // 如果配置中指定了路径,直接使用
+        if (!string.IsNullOrWhiteSpace(_options.NpmGlobalPath))
+        {
+            _logger.LogDebug("使用配置的NPM全局路径: {Path}", _options.NpmGlobalPath);
+            return _options.NpmGlobalPath;
+        }
+
+        // 尝试自动检测NPM全局路径
+        try
+        {
+            // 方法1: 通过执行 npm config get prefix 获取
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "npm",
+                Arguments = "config get prefix",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process != null)
+            {
+                process.WaitForExit(5000); // 5秒超时
+                if (process.ExitCode == 0)
+                {
+                    var prefix = process.StandardOutput.ReadToEnd().Trim();
+                    if (!string.IsNullOrWhiteSpace(prefix) && Directory.Exists(prefix))
+                    {
+                        _logger.LogInformation("自动检测到NPM全局路径: {Path}", prefix);
+                        return prefix;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "自动检测NPM全局路径失败,尝试使用环境变量");
+        }
+
+        // 方法2: 尝试从环境变量中获取常见的NPM路径
+        if (OperatingSystem.IsWindows())
+        {
+            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var npmPath = Path.Combine(appDataPath, "npm");
+            
+            if (Directory.Exists(npmPath))
+            {
+                _logger.LogInformation("通过AppData路径检测到NPM全局路径: {Path}", npmPath);
+                return npmPath;
+            }
+        }
+        else
+        {
+            // Linux/Mac 通常在 /usr/local/bin 或 ~/.npm-global
+            var possiblePaths = new[] 
+            { 
+                "/usr/local/bin", 
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".npm-global", "bin")
+            };
+            
+            foreach (var path in possiblePaths)
+            {
+                if (Directory.Exists(path))
+                {
+                    _logger.LogInformation("检测到NPM全局路径: {Path}", path);
+                    return path;
+                }
+            }
+        }
+
+        _logger.LogWarning("无法检测到NPM全局路径,将依赖系统PATH环境变量");
+        return null;
     }
 
     /// <summary>
