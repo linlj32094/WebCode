@@ -1,0 +1,273 @@
+@namespace WebCodeCli.Components
+
+<!-- 模板库按钮 -->
+<button @onclick="OpenModal" 
+        class="btn-default flex items-center gap-2"
+        title="@LocalizedTitle">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+    </svg>
+    <span class="hidden sm:inline">@LocalizedTitle</span>
+</button>
+
+<!-- 模板库模态框 -->
+@if (_showModal)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseModal">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden transform transition-all" @onclick:stopPropagation="true">
+            <!-- 头部 -->
+            <div class="flex items-center justify-between p-6 border-b-2 border-gray-200 bg-gradient-to-r from-gray-50 to-white">
+                <h2 class="text-2xl font-bold text-gray-800 flex items-center gap-3">
+                    <svg class="w-7 h-7 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                    @LocalizedTitle
+                </h2>
+                <button @onclick="CloseModal" class="p-2 hover:bg-gray-200 rounded-lg transition-colors">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- 工具栏 -->
+            <div class="p-4 border-b border-gray-200 bg-gray-50 flex flex-col sm:flex-row gap-3">
+                <!-- 搜索 -->
+                <div class="flex-1 relative">
+                    <svg class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input type="text" 
+                           @bind="_searchText" 
+                           @bind:event="oninput"
+                           @onkeyup="FilterTemplates"
+                           placeholder="@LocalizedSearch"
+                           class="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-500 focus:border-transparent text-sm" />
+                </div>
+
+                <!-- 分类筛选 -->
+                <select @bind="_selectedCategory" @bind:after="FilterTemplates"
+                        class="px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-500 focus:border-transparent text-sm bg-white">
+                    <option value="">@GetCategoryName("all")</option>
+                    <option value="optimization">@GetCategoryName("optimization")</option>
+                    <option value="documentation">@GetCategoryName("documentation")</option>
+                    <option value="debugging">@GetCategoryName("debugging")</option>
+                    <option value="refactoring">@GetCategoryName("refactoring")</option>
+                    <option value="testing">@GetCategoryName("testing")</option>
+                    <option value="review">@GetCategoryName("review")</option>
+                    <option value="custom">@GetCategoryName("custom")</option>
+                </select>
+
+                <!-- 操作按钮 -->
+                <div class="flex gap-2">
+                    <button @onclick="ShowAddTemplateDialog" class="btn-primary flex items-center gap-2 text-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                        <span class="hidden sm:inline">添加</span>
+                    </button>
+                    <button @onclick="ExportTemplates" class="btn-default flex items-center gap-2 text-sm">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        <span class="hidden sm:inline">导出</span>
+                    </button>
+                    <label class="btn-default flex items-center gap-2 text-sm cursor-pointer">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                        </svg>
+                        <span class="hidden sm:inline">导入</span>
+                        <InputFile OnChange="ImportTemplates" accept=".json" class="hidden" />
+                    </label>
+                </div>
+            </div>
+
+            <!-- 模板列表 -->
+            <div class="p-6 overflow-y-auto" style="max-height: calc(90vh - 300px);">
+                @if (_isLoading)
+                {
+                    <div class="flex items-center justify-center py-12">
+                        <div class="animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-gray-700"></div>
+                    </div>
+                }
+                else if (_filteredTemplates.Any())
+                {
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        @foreach (var template in _filteredTemplates)
+                        {
+                            <div class="template-card group bg-gradient-to-br from-white to-gray-50 border-2 border-gray-200 hover:border-gray-400 rounded-xl p-4 transition-all duration-200 shadow-sm hover:shadow-lg">
+                                <!-- 头部 -->
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="flex items-center gap-2 flex-1 min-w-0">
+                                        <span class="text-2xl flex-shrink-0">@template.Icon</span>
+                                        <h3 class="font-bold text-gray-800 truncate">@template.Title</h3>
+                                    </div>
+                                    <button @onclick="() => ToggleFavorite(template)" 
+                                            class="flex-shrink-0 p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
+                                            title="@(template.IsFavorite ? "取消收藏" : "收藏")">
+                                        @if (template.IsFavorite)
+                                        {
+                                            <svg class="w-5 h-5 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
+                                                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"></path>
+                                            </svg>
+                                        }
+                                        else
+                                        {
+                                            <svg class="w-5 h-5 text-gray-400 group-hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path>
+                                            </svg>
+                                        }
+                                    </button>
+                                </div>
+
+                                <!-- 内容预览 -->
+                                <p class="text-sm text-gray-600 mb-3 line-clamp-3 min-h-[60px]">@template.Content</p>
+
+                                <!-- 标签 -->
+                                <div class="flex items-center gap-2 mb-3 flex-wrap">
+                                    <span class="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
+                                        @GetCategoryName(template.Category)
+                                    </span>
+                                    @if (template.IsCustom)
+                                    {
+                                        <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">自定义</span>
+                                    }
+                                    @if (template.Variables.Any())
+                                    {
+                                        <span class="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
+                                            @template.Variables.Count 个变量
+                                        </span>
+                                    }
+                                </div>
+
+                                <!-- 操作按钮 -->
+                                <div class="flex items-center gap-2">
+                                    <button @onclick="() => UseTemplate(template)" 
+                                            class="btn-primary text-sm py-2 px-4 flex-1 flex items-center justify-center gap-2">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                        </svg>
+                                        <span>使用</span>
+                                    </button>
+                                    @if (template.IsCustom)
+                                    {
+                                        <button @onclick="() => ShowEditTemplateDialog(template)" 
+                                                class="p-2 hover:bg-blue-50 rounded-lg transition-colors border border-gray-200 hover:border-blue-300"
+                                                title="编辑">
+                                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                            </svg>
+                                        </button>
+                                        <button @onclick="() => DeleteTemplate(template)" 
+                                                class="p-2 hover:bg-red-50 rounded-lg transition-colors border border-gray-200 hover:border-red-300"
+                                                title="删除">
+                                            <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                            </svg>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="text-center py-12">
+                        <div class="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg class="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                        </div>
+                        <p class="text-gray-500">暂无模板</p>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<!-- 添加/编辑模板对话框 -->
+@if (_showTemplateDialog)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4" @onclick="CloseTemplateDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between p-6 border-b-2 border-gray-200 bg-gray-50">
+                <h3 class="text-xl font-bold text-gray-800">
+                    @(_editingTemplate == null ? "添加模板" : "编辑模板")
+                </h3>
+                <button @onclick="CloseTemplateDialog" class="p-2 hover:bg-gray-200 rounded-lg transition-colors">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="p-6 overflow-y-auto space-y-4" style="max-height: calc(90vh - 200px);">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="label">标题 *</label>
+                        <input @bind="_templateForm.Title" type="text" class="input-field" placeholder="例如: 优化代码" maxlength="100" />
+                    </div>
+                    <div>
+                        <label class="label">图标 (Emoji) *</label>
+                        <input @bind="_templateForm.Icon" type="text" class="input-field" placeholder="🔧" maxlength="10" />
+                    </div>
+                </div>
+
+                <div>
+                    <label class="label">分类 *</label>
+                    <select @bind="_templateForm.Category" class="input-field">
+                        <option value="optimization">@GetCategoryName("optimization")</option>
+                        <option value="documentation">@GetCategoryName("documentation")</option>
+                        <option value="debugging">@GetCategoryName("debugging")</option>
+                        <option value="refactoring">@GetCategoryName("refactoring")</option>
+                        <option value="testing">@GetCategoryName("testing")</option>
+                        <option value="review">@GetCategoryName("review")</option>
+                        <option value="custom">@GetCategoryName("custom")</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="label">模板内容 *</label>
+                    <textarea @bind="_templateForm.Content" rows="6" class="input-field" placeholder="输入模板内容...使用 {{变量名}} 定义变量" maxlength="2000"></textarea>
+                    <p class="text-xs text-gray-500 mt-1">提示：使用 {{code}}, {{language}}, {{framework}} 等变量</p>
+                </div>
+
+                <div>
+                    <label class="label">描述（可选）</label>
+                    <textarea @bind="_templateForm.Description" rows="2" class="input-field" placeholder="模板说明..." maxlength="500"></textarea>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
+                <button @onclick="CloseTemplateDialog" class="btn-default">
+                    取消
+                </button>
+                <button @onclick="SaveTemplate" 
+                        disabled="@(string.IsNullOrWhiteSpace(_templateForm.Title) || string.IsNullOrWhiteSpace(_templateForm.Content) || string.IsNullOrWhiteSpace(_templateForm.Icon))"
+                        class="btn-primary">
+                    保存
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .template-card {
+        transition: all 0.2s ease;
+    }
+
+    .template-card:hover {
+        transform: translateY(-2px);
+    }
+
+    .line-clamp-3 {
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+</style>
+

@@ -1,0 +1,719 @@
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components
+@inject IJSRuntime JSRuntime
+@inject NavigationManager NavigationManager
+
+@if (_isVisible)
+{
+    <div class="fixed inset-0 z-50 overflow-hidden" @onclick="HandleBackdropClick">
+        <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
+            <!-- 背景遮罩 -->
+            <div class="fixed inset-0 transition-opacity bg-black/50 backdrop-blur-sm" aria-hidden="true"></div>
+
+            <!-- 居中技巧 -->
+            <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+            <!-- 模态框内容 -->
+            <div class="inline-block w-full max-w-6xl overflow-hidden text-left align-middle transition-all transform bg-white rounded-2xl shadow-2xl border border-gray-200"
+                 @onclick:stopPropagation="true">
+                
+                <!-- 头部 -->
+                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
+                    <div class="flex items-center gap-3 flex-1 min-w-0">
+                        @((MarkupString)GetFileTypeIcon())
+                        <div class="flex-1 min-w-0">
+                            <h3 class="text-lg font-bold text-gray-900 truncate">@_fileName</h3>
+                            <p class="text-xs text-gray-600 truncate">@_filePath</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 ml-4">
+                        @if (!string.IsNullOrEmpty(_languageLabel))
+                        {
+                            <span class="@GetLabelColorClass() px-3 py-1 text-xs font-bold text-white rounded-full shadow-sm">@_languageLabel</span>
+                        }
+                        <span class="text-xs text-gray-600 font-medium">@_fileSize</span>
+                    </div>
+                </div>
+
+                <!-- 工具栏 -->
+                <div class="flex items-center justify-between px-6 py-3 bg-gray-50 border-b border-gray-200">
+                    <div class="flex items-center gap-2">
+                        @if (_previewType == PreviewType.Code)
+                        {
+                            <button @onclick="CopyCode" class="btn-primary text-sm py-2 px-4 flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                </svg>
+                                @(_copied ? "✓ 已复制" : "复制代码")
+                            </button>
+                        }
+                        @if (_previewType == PreviewType.Office)
+                        {
+                            <button @onclick="OpenInNewWindow" class="btn-primary text-sm py-2 px-4 flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                                </svg>
+                                在新窗口打开
+                            </button>
+                        }
+                        <button @onclick="DownloadFile" class="btn-secondary text-sm py-2 px-4 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                            下载文件
+                        </button>
+                    </div>
+                    <button @onclick="Close" class="text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg p-2 transition-all">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- 内容区域 - 根据文件类型显示不同预览 -->
+                @if (_previewType == PreviewType.Code)
+                {
+                    <!-- 代码内容区域 -->
+                    <div class="max-h-[70vh] overflow-y-auto bg-gray-900">
+                        <pre class="!m-0 !p-4"><code id="code-preview-content" class="language-@_language !text-sm">@_fileContent</code></pre>
+                    </div>
+                    
+                    <!-- 底部信息栏 -->
+                    <div class="flex items-center justify-between px-6 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-700 font-medium">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                            </svg>
+                            共 @_lineCount 行
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+                            </svg>
+                            编码: UTF-8
+                        </div>
+                    </div>
+                }
+                else if (_previewType == PreviewType.Image)
+                {
+                    <!-- 图片预览区域 -->
+                    <div class="max-h-[70vh] overflow-auto bg-gray-100 flex items-center justify-center p-4">
+                        <img src="@_imageDataUrl" alt="@_fileName" class="max-w-full max-h-[65vh] object-contain rounded-lg shadow-lg" />
+                    </div>
+                    
+                    <!-- 底部信息栏 -->
+                    <div class="flex items-center justify-center px-6 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-700 font-medium">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                            </svg>
+                            图片预览
+                        </div>
+                    </div>
+                }
+                else if (_previewType == PreviewType.Office)
+                {
+                    <!-- Office文档预览区域 -->
+                    @if (_isLoadingPreview)
+                    {
+                        <div class="h-[70vh] flex flex-col items-center justify-center bg-gray-50">
+                            <div class="animate-spin h-12 w-12 border-4 border-blue-500 rounded-full border-t-transparent mb-4"></div>
+                            <p class="text-gray-600 font-medium">正在加载预览...</p>
+                            <p class="text-xs text-gray-400 mt-2">使用 Microsoft Office 在线预览</p>
+                        </div>
+                    }
+                    else if (!string.IsNullOrEmpty(_officePreviewError))
+                    {
+                        <!-- 预览错误，显示提示信息 -->
+                        <div class="h-[70vh] flex flex-col items-center justify-center bg-gray-50 p-8">
+                            <div class="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mb-4">
+                                <svg class="w-10 h-10 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                </svg>
+                            </div>
+                            <h4 class="text-lg font-bold text-gray-800 mb-2">无法预览此文件</h4>
+                            <p class="text-gray-600 text-center max-w-md mb-4">@_officePreviewError</p>
+                            <div class="flex gap-3">
+                                <button @onclick="DownloadFile" class="btn-primary py-2 px-4 flex items-center gap-2">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                    </svg>
+                                    下载文件
+                                </button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="h-[70vh] bg-gray-100">
+                            <iframe src="@_officePreviewUrl" 
+                                    class="w-full h-full border-0"
+                                    sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+                                    @onload="OnIframeLoaded"
+                                    @onerror="OnIframeError">
+                            </iframe>
+                        </div>
+                    }
+                    
+                    <!-- 底部信息栏 -->
+                    <div class="flex items-center justify-between px-6 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-700 font-medium">
+                        <div class="flex items-center gap-2">
+                            @((MarkupString)GetOfficeTypeIcon())
+                            <span>@GetOfficeTypeName()</span>
+                        </div>
+                        <div class="flex items-center gap-2 text-blue-600">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path>
+                            </svg>
+                            <span>Microsoft Office 在线预览</span>
+                        </div>
+                    </div>
+                }
+                else if (_previewType == PreviewType.Pdf)
+                {
+                    <!-- PDF预览区域 -->
+                    <div class="h-[70vh] bg-gray-100">
+                        <iframe src="@_pdfDataUrl" 
+                                class="w-full h-full border-0"
+                                type="application/pdf">
+                        </iframe>
+                    </div>
+                    
+                    <!-- 底部信息栏 -->
+                    <div class="flex items-center justify-center px-6 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-700 font-medium">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"></path>
+                            </svg>
+                            PDF 文档预览
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <!-- 不支持预览的文件类型 -->
+                    <div class="h-[50vh] flex flex-col items-center justify-center bg-gray-50 p-8">
+                        <div class="w-20 h-20 bg-gray-200 rounded-full flex items-center justify-center mb-4">
+                            <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                            </svg>
+                        </div>
+                        <h4 class="text-lg font-bold text-gray-800 mb-2">无法预览此文件类型</h4>
+                        <p class="text-gray-600 text-center max-w-md mb-4">此文件格式不支持在线预览，请下载后使用本地应用程序打开。</p>
+                        <button @onclick="DownloadFile" class="btn-primary py-2 px-4 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                            下载文件
+                        </button>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // 预览类型枚举
+    private enum PreviewType
+    {
+        Code,      // 代码/文本文件
+        Image,     // 图片文件
+        Office,    // Office文档(Word/Excel/PowerPoint)
+        Pdf,       // PDF文件
+        Unknown    // 不支持预览
+    }
+
+    // 会话ID，用于生成文件访问URL
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+
+    private bool _isVisible = false;
+    private string _fileName = string.Empty;
+    private string _filePath = string.Empty;
+    private string _fileContent = string.Empty;
+    private string _language = "plaintext";
+    private string _languageLabel = string.Empty;
+    private string _fileSize = string.Empty;
+    private int _lineCount = 0;
+    private bool _copied = false;
+    private byte[]? _fileBytes;
+    
+    // 预览相关
+    private PreviewType _previewType = PreviewType.Code;
+    private string _imageDataUrl = string.Empty;
+    private string _pdfDataUrl = string.Empty;
+    private string _officePreviewUrl = string.Empty;
+    private string _officePreviewError = string.Empty;
+    private bool _isLoadingPreview = false;
+    private string _currentSessionId = string.Empty;
+
+    /// <summary>
+    /// 显示预览模态框
+    /// </summary>
+    /// <param name="fileName">文件名</param>
+    /// <param name="filePath">文件相对路径</param>
+    /// <param name="content">文件文本内容（可选）</param>
+    /// <param name="fileBytes">文件字节内容（可选）</param>
+    /// <param name="sessionId">会话ID（用于生成文件URL）</param>
+    public async Task ShowAsync(string fileName, string filePath, string content, byte[]? fileBytes = null, string? sessionId = null)
+    {
+        _fileName = fileName;
+        _filePath = filePath;
+        _fileContent = content;
+        _fileBytes = fileBytes;
+        _copied = false;
+        _officePreviewError = string.Empty;
+        _isLoadingPreview = false;
+        _currentSessionId = sessionId ?? SessionId;
+
+        // 计算文件大小
+        var actualSize = fileBytes?.Length ?? content.Length;
+        _fileSize = CalculateFileSize(actualSize);
+
+        // 根据文件扩展名确定预览类型
+        var extension = System.IO.Path.GetExtension(fileName).ToLower();
+        _previewType = GetPreviewType(extension);
+        
+        // 根据预览类型进行初始化
+        switch (_previewType)
+        {
+            case PreviewType.Code:
+                (_language, _languageLabel) = GetLanguageFromExtension(extension);
+                _lineCount = content.Split('\n').Length;
+                break;
+                
+            case PreviewType.Image:
+                _languageLabel = GetImageLabel(extension);
+                if (fileBytes != null)
+                {
+                    var mimeType = GetMimeType(extension);
+                    _imageDataUrl = $"data:{mimeType};base64,{Convert.ToBase64String(fileBytes)}";
+                }
+                break;
+                
+            case PreviewType.Pdf:
+                _languageLabel = "PDF";
+                if (fileBytes != null)
+                {
+                    _pdfDataUrl = $"data:application/pdf;base64,{Convert.ToBase64String(fileBytes)}";
+                }
+                break;
+                
+            case PreviewType.Office:
+                _languageLabel = GetOfficeLabel(extension);
+                await InitializeOfficePreview(extension);
+                break;
+                
+            default:
+                _languageLabel = extension.TrimStart('.').ToUpper();
+                break;
+        }
+
+        _isVisible = true;
+        StateHasChanged();
+
+        // 如果是代码预览，应用语法高亮
+        if (_previewType == PreviewType.Code)
+        {
+            await Task.Delay(50);
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("applyCodeHighlight");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"应用语法高亮失败: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 初始化Office在线预览
+    /// </summary>
+    private async Task InitializeOfficePreview(string extension)
+    {
+        _isLoadingPreview = true;
+        StateHasChanged();
+
+        try
+        {
+            // 获取当前应用的基础URL
+            var baseUri = NavigationManager.BaseUri.TrimEnd('/');
+            
+            // 检查是否为localhost/本地环境
+            var uri = new Uri(baseUri);
+            var isLocalhost = uri.Host == "localhost" || uri.Host == "127.0.0.1" || uri.Host.StartsWith("192.168.");
+            
+            if (isLocalhost)
+            {
+                // 本地环境无法使用Office Online预览
+                _officePreviewError = "Office在线预览需要公网可访问的URL。\n\n当前为本地开发环境，请下载文件后使用本地Office应用打开。\n\n如需在线预览，请将应用部署到公网服务器。";
+            }
+            else
+            {
+                // 构建文件的公开访问URL
+                var encodedFilePath = Uri.EscapeDataString(_filePath);
+                var fileUrl = $"{baseUri}/api/workspace/{_currentSessionId}/files/{encodedFilePath}";
+                
+                // 构建Office Online预览URL
+                var encodedFileUrl = Uri.EscapeDataString(fileUrl);
+                _officePreviewUrl = $"https://view.officeapps.live.com/op/view.aspx?src={encodedFileUrl}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _officePreviewError = $"初始化预览失败: {ex.Message}";
+        }
+        finally
+        {
+            _isLoadingPreview = false;
+        }
+    }
+
+    /// <summary>
+    /// 在新窗口打开Office预览
+    /// </summary>
+    private async Task OpenInNewWindow()
+    {
+        if (!string.IsNullOrEmpty(_officePreviewUrl))
+        {
+            await JSRuntime.InvokeVoidAsync("window.open", _officePreviewUrl, "_blank");
+        }
+    }
+
+    /// <summary>
+    /// iframe加载完成回调
+    /// </summary>
+    private void OnIframeLoaded()
+    {
+        _isLoadingPreview = false;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// iframe加载错误回调
+    /// </summary>
+    private void OnIframeError()
+    {
+        _officePreviewError = "预览加载失败，请尝试下载文件后使用本地应用打开。";
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 获取预览类型
+    /// </summary>
+    private PreviewType GetPreviewType(string extension)
+    {
+        return extension.ToLower() switch
+        {
+            // 图片文件
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".svg" or ".ico" 
+                => PreviewType.Image,
+            
+            // PDF文件
+            ".pdf" => PreviewType.Pdf,
+            
+            // Office文档 - Word
+            ".doc" or ".docx" or ".docm" or ".dotx" or ".dotm" or ".odt" 
+                => PreviewType.Office,
+            
+            // Office文档 - Excel
+            ".xls" or ".xlsx" or ".xlsm" or ".xlsb" or ".xltx" or ".xltm" or ".csv" or ".ods" 
+                => PreviewType.Office,
+            
+            // Office文档 - PowerPoint
+            ".ppt" or ".pptx" or ".pptm" or ".potx" or ".potm" or ".ppsx" or ".ppsm" or ".odp" 
+                => PreviewType.Office,
+            
+            // 代码/文本文件
+            ".html" or ".htm" or ".css" or ".js" or ".ts" or ".jsx" or ".tsx" or ".json" or 
+            ".xml" or ".cs" or ".java" or ".py" or ".rb" or ".php" or ".go" or ".rs" or 
+            ".sql" or ".sh" or ".bash" or ".ps1" or ".yaml" or ".yml" or ".md" or ".vue" or 
+            ".razor" or ".cpp" or ".cc" or ".c" or ".swift" or ".kt" or ".dart" or ".r" or 
+            ".scala" or ".dockerfile" or ".txt" or ".log" or ".config" or ".ini" or ".env" or
+            ".gitignore" or ".editorconfig" or ".prettierrc" or ".eslintrc" or ".babelrc" or
+            ".csproj" or ".sln" or ".props" or ".targets"
+                => PreviewType.Code,
+            
+            // 压缩文件和其他二进制文件
+            ".zip" or ".rar" or ".7z" or ".tar" or ".gz" or ".exe" or ".dll" or ".so" or ".bin"
+                => PreviewType.Unknown,
+            
+            // 默认尝试作为代码/文本处理
+            _ => PreviewType.Code
+        };
+    }
+
+    /// <summary>
+    /// 获取文件类型图标
+    /// </summary>
+    private string GetFileTypeIcon()
+    {
+        var extension = System.IO.Path.GetExtension(_fileName).ToLower();
+        
+        return extension switch
+        {
+            // Word
+            ".doc" or ".docx" or ".docm" or ".dotx" or ".dotm" or ".odt" =>
+                "<svg class=\"w-6 h-6 text-blue-600 flex-shrink-0\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM9.5 18.5L6 8h2l2 6 2-6h2l-3.5 10.5h-1zM14 9V3.5L19.5 9H14z\"/></svg>",
+            
+            // Excel
+            ".xls" or ".xlsx" or ".xlsm" or ".xlsb" or ".xltx" or ".xltm" or ".csv" or ".ods" =>
+                "<svg class=\"w-6 h-6 text-green-600 flex-shrink-0\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM9 19H7v-2h2v2zm0-4H7v-2h2v2zm4 4h-2v-2h2v2zm0-4h-2v-2h2v2zm4 4h-2v-2h2v2zm0-4h-2v-2h2v2zM14 9V3.5L19.5 9H14z\"/></svg>",
+            
+            // PowerPoint
+            ".ppt" or ".pptx" or ".pptm" or ".potx" or ".potm" or ".ppsx" or ".ppsm" or ".odp" =>
+                "<svg class=\"w-6 h-6 text-orange-600 flex-shrink-0\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM9 19H7V9h4c1.1 0 2 .9 2 2v2c0 1.1-.9 2-2 2H9v4zm0-6h2v-2H9v2zM14 9V3.5L19.5 9H14z\"/></svg>",
+            
+            // PDF
+            ".pdf" =>
+                "<svg class=\"w-6 h-6 text-red-500 flex-shrink-0\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 9V3.5L19.5 9H14z\"/></svg>",
+            
+            // 图片
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".svg" or ".ico" =>
+                "<svg class=\"w-6 h-6 text-pink-500 flex-shrink-0\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // 默认代码图标
+            _ => "<svg class=\"w-6 h-6 text-gray-700 flex-shrink-0\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4\"></path></svg>"
+        };
+    }
+
+    /// <summary>
+    /// 获取标签颜色类
+    /// </summary>
+    private string GetLabelColorClass()
+    {
+        var extension = System.IO.Path.GetExtension(_fileName).ToLower();
+        
+        return extension switch
+        {
+            ".doc" or ".docx" or ".docm" or ".dotx" or ".dotm" or ".odt" => "bg-blue-600",
+            ".xls" or ".xlsx" or ".xlsm" or ".xlsb" or ".xltx" or ".xltm" or ".csv" or ".ods" => "bg-green-600",
+            ".ppt" or ".pptx" or ".pptm" or ".potx" or ".potm" or ".ppsx" or ".ppsm" or ".odp" => "bg-orange-500",
+            ".pdf" => "bg-red-500",
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".svg" or ".ico" => "bg-pink-500",
+            _ => "bg-gray-900"
+        };
+    }
+
+    /// <summary>
+    /// 获取Office类型图标
+    /// </summary>
+    private string GetOfficeTypeIcon()
+    {
+        var extension = System.IO.Path.GetExtension(_fileName).ToLower();
+        
+        return extension switch
+        {
+            ".doc" or ".docx" or ".docm" or ".dotx" or ".dotm" or ".odt" =>
+                "<svg class=\"w-4 h-4 text-blue-600\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z\"/></svg>",
+            
+            ".xls" or ".xlsx" or ".xlsm" or ".xlsb" or ".xltx" or ".xltm" or ".csv" or ".ods" =>
+                "<svg class=\"w-4 h-4 text-green-600\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z\"/></svg>",
+            
+            ".ppt" or ".pptx" or ".pptm" or ".potx" or ".potm" or ".ppsx" or ".ppsm" or ".odp" =>
+                "<svg class=\"w-4 h-4 text-orange-600\" fill=\"currentColor\" viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z\"/></svg>",
+            
+            _ => "<svg class=\"w-4 h-4 text-gray-600\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z\"></path></svg>"
+        };
+    }
+
+    /// <summary>
+    /// 获取Office类型名称
+    /// </summary>
+    private string GetOfficeTypeName()
+    {
+        var extension = System.IO.Path.GetExtension(_fileName).ToLower();
+        
+        return extension switch
+        {
+            ".doc" or ".docx" => "Word 文档",
+            ".docm" => "Word 宏文档",
+            ".dotx" or ".dotm" => "Word 模板",
+            ".odt" => "OpenDocument 文本",
+            
+            ".xls" or ".xlsx" => "Excel 电子表格",
+            ".xlsm" => "Excel 宏工作簿",
+            ".xlsb" => "Excel 二进制工作簿",
+            ".xltx" or ".xltm" => "Excel 模板",
+            ".csv" => "CSV 数据文件",
+            ".ods" => "OpenDocument 电子表格",
+            
+            ".ppt" or ".pptx" => "PowerPoint 演示文稿",
+            ".pptm" => "PowerPoint 宏演示文稿",
+            ".potx" or ".potm" => "PowerPoint 模板",
+            ".ppsx" or ".ppsm" => "PowerPoint 放映",
+            ".odp" => "OpenDocument 演示文稿",
+            
+            _ => "Office 文档"
+        };
+    }
+
+    /// <summary>
+    /// 获取Office标签
+    /// </summary>
+    private string GetOfficeLabel(string extension)
+    {
+        return extension.ToLower() switch
+        {
+            ".doc" or ".docx" or ".docm" or ".dotx" or ".dotm" => "Word",
+            ".odt" => "ODT",
+            ".xls" or ".xlsx" or ".xlsm" or ".xlsb" or ".xltx" or ".xltm" => "Excel",
+            ".csv" => "CSV",
+            ".ods" => "ODS",
+            ".ppt" or ".pptx" or ".pptm" or ".potx" or ".potm" or ".ppsx" or ".ppsm" => "PowerPoint",
+            ".odp" => "ODP",
+            _ => extension.TrimStart('.').ToUpper()
+        };
+    }
+
+    /// <summary>
+    /// 获取图片标签
+    /// </summary>
+    private string GetImageLabel(string extension)
+    {
+        return extension.ToLower() switch
+        {
+            ".png" => "PNG",
+            ".jpg" or ".jpeg" => "JPEG",
+            ".gif" => "GIF",
+            ".webp" => "WebP",
+            ".bmp" => "BMP",
+            ".svg" => "SVG",
+            ".ico" => "ICO",
+            _ => "Image"
+        };
+    }
+
+    private void Close()
+    {
+        _isVisible = false;
+        _imageDataUrl = string.Empty;
+        _pdfDataUrl = string.Empty;
+        _officePreviewUrl = string.Empty;
+        _officePreviewError = string.Empty;
+        StateHasChanged();
+    }
+
+    private void HandleBackdropClick()
+    {
+        Close();
+    }
+
+    private async Task CopyCode()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", _fileContent);
+            _copied = true;
+            StateHasChanged();
+
+            // 2秒后恢复按钮文本
+            await Task.Delay(2000);
+            _copied = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"复制失败: {ex.Message}");
+        }
+    }
+
+    private async Task DownloadFile()
+    {
+        try
+        {
+            if (_fileBytes != null)
+            {
+                var base64 = Convert.ToBase64String(_fileBytes);
+                var mimeType = GetMimeType(System.IO.Path.GetExtension(_fileName));
+                await JSRuntime.InvokeVoidAsync("downloadBase64File", _fileName, base64, mimeType);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"下载失败: {ex.Message}");
+        }
+    }
+
+    private string CalculateFileSize(int byteCount)
+    {
+        if (byteCount < 1024)
+            return $"{byteCount} B";
+        else if (byteCount < 1024 * 1024)
+            return $"{byteCount / 1024.0:F2} KB";
+        else
+            return $"{byteCount / (1024.0 * 1024.0):F2} MB";
+    }
+
+    private (string language, string label) GetLanguageFromExtension(string extension)
+    {
+        return extension switch
+        {
+            ".html" or ".htm" => ("html", "HTML"),
+            ".css" => ("css", "CSS"),
+            ".js" => ("javascript", "JavaScript"),
+            ".ts" => ("typescript", "TypeScript"),
+            ".jsx" => ("jsx", "JSX"),
+            ".tsx" => ("tsx", "TSX"),
+            ".json" => ("json", "JSON"),
+            ".xml" => ("xml", "XML"),
+            ".cs" => ("csharp", "C#"),
+            ".java" => ("java", "Java"),
+            ".py" => ("python", "Python"),
+            ".rb" => ("ruby", "Ruby"),
+            ".php" => ("php", "PHP"),
+            ".go" => ("go", "Go"),
+            ".rs" => ("rust", "Rust"),
+            ".sql" => ("sql", "SQL"),
+            ".sh" or ".bash" => ("bash", "Bash"),
+            ".ps1" => ("powershell", "PowerShell"),
+            ".yaml" or ".yml" => ("yaml", "YAML"),
+            ".md" => ("markdown", "Markdown"),
+            ".vue" => ("markup", "Vue"),
+            ".razor" => ("cshtml", "Razor"),
+            ".cpp" or ".cc" => ("cpp", "C++"),
+            ".c" => ("c", "C"),
+            ".swift" => ("swift", "Swift"),
+            ".kt" => ("kotlin", "Kotlin"),
+            ".dart" => ("dart", "Dart"),
+            ".r" => ("r", "R"),
+            ".scala" => ("scala", "Scala"),
+            ".dockerfile" => ("docker", "Docker"),
+            _ => ("plaintext", "Text")
+        };
+    }
+
+    private string GetMimeType(string extension)
+    {
+        return extension.ToLower() switch
+        {
+            ".html" or ".htm" => "text/html",
+            ".css" => "text/css",
+            ".js" => "text/javascript",
+            ".json" => "application/json",
+            ".xml" => "application/xml",
+            ".txt" => "text/plain",
+            ".md" => "text/markdown",
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            ".bmp" => "image/bmp",
+            ".svg" => "image/svg+xml",
+            ".ico" => "image/x-icon",
+            ".pdf" => "application/pdf",
+            ".doc" => "application/msword",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xls" => "application/vnd.ms-excel",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".ppt" => "application/vnd.ms-powerpoint",
+            ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".csv" => "text/csv",
+            ".zip" => "application/zip",
+            ".rar" => "application/x-rar-compressed",
+            ".7z" => "application/x-7z-compressed",
+            _ => "application/octet-stream"
+        };
+    }
+}

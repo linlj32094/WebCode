@@ -1,0 +1,302 @@
+@using WebCodeCli.Domain.Domain.Model
+@using WebCodeCli.Domain.Domain.Service
+@inject IFileSearchService FileSearchService
+@inject ICliExecutorService CliExecutorService
+
+<div class="h-full flex flex-col bg-white">
+    <!-- 头部：搜索表单 -->
+    <div class="p-3 sm:p-4 border-b border-gray-200 flex-shrink-0 space-y-3">
+        <!-- 调试信息 -->
+        @if (!string.IsNullOrEmpty(_debugMessage))
+        {
+            <div class="bg-blue-50 border-l-4 border-blue-500 text-blue-700 px-3 py-2 rounded text-xs">
+                <strong>调试:</strong> @_debugMessage
+            </div>
+        }
+        
+        <!-- 搜索输入 -->
+        <div class="flex items-center gap-2">
+            <input type="text" 
+                   @bind="_searchTerm" 
+                   @bind:event="oninput"
+                   @onkeydown="HandleKeyDown"
+                   placeholder="输入搜索内容..."
+                   class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500" />
+            <button @onclick="PerformSearch" 
+                    disabled="@_isSearching"
+                    class="btn-primary px-4 py-2 text-sm flex items-center gap-2 disabled:opacity-50 hover:opacity-90 active:scale-95 transition-all">
+                @if (_isSearching)
+                {
+                    <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                }
+                else
+                {
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                }
+                搜索
+            </button>
+        </div>
+        
+        <!-- 搜索选项 -->
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" @bind="_options.CaseSensitive" class="rounded" />
+                <span>区分大小写</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" @bind="_options.WholeWord" class="rounded" />
+                <span>全词匹配</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" @bind="_options.UseRegex" class="rounded" />
+                <span>正则表达式</span>
+            </label>
+            
+            <div class="flex items-center gap-2 ml-auto">
+                <label class="text-gray-600">文件类型:</label>
+                <input type="text" 
+                       @bind="_fileTypeFilter" 
+                       @bind:event="oninput"
+                       placeholder=".cs,.razor,.js"
+                       class="px-2 py-1 border border-gray-200 rounded text-xs w-32" />
+            </div>
+        </div>
+    </div>
+
+    <!-- 内容区域：搜索结果 -->
+    <div class="flex-1 overflow-y-auto p-4">
+        @if (_searchResults == null)
+        {
+            <!-- 初始状态 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">输入搜索内容</p>
+                <p class="text-sm mt-2 text-gray-500">支持普通文本搜索和正则表达式搜索</p>
+            </div>
+        }
+        else if (!_searchResults.Any())
+        {
+            <!-- 无结果 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">未找到匹配结果</p>
+                <p class="text-sm mt-2 text-gray-500">尝试使用不同的搜索词或调整搜索选项</p>
+            </div>
+        }
+        else
+        {
+            <!-- 搜索结果统计 -->
+            <div class="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <div class="flex items-center justify-between text-sm">
+                    <span class="text-gray-700">
+                        找到 <span class="font-bold text-gray-900">@_searchResults.Count</span> 个匹配结果
+                    </span>
+                    <span class="text-gray-500">
+                        共 <span class="font-semibold">@_searchResults.Select(r => r.FilePath).Distinct().Count()</span> 个文件
+                    </span>
+                </div>
+            </div>
+            
+            <!-- 结果列表（按文件分组） -->
+            <div class="space-y-4">
+                @foreach (var fileGroup in _searchResults.GroupBy(r => r.FilePath))
+                {
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <!-- 文件头部 -->
+                        <div class="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                                </svg>
+                                <span class="font-semibold text-gray-800 text-sm">@fileGroup.Key</span>
+                            </div>
+                            <span class="text-xs text-gray-500">@fileGroup.Count() 个匹配</span>
+                        </div>
+                        
+                        <!-- 匹配行列表 -->
+                        <div class="divide-y divide-gray-100">
+                            @foreach (var result in fileGroup.Take(10))
+                            {
+                                <div class="px-4 py-3 hover:bg-gray-50 transition-colors">
+                                    <div class="flex items-start gap-3">
+                                        <span class="flex-shrink-0 text-xs font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                                            @result.LineNumber
+                                        </span>
+                                        <div class="flex-1 min-w-0">
+                                            <pre class="text-sm font-mono text-gray-800 whitespace-pre-wrap break-all">@HighlightMatches(result)</pre>
+                                            
+                                            @if (result.ContextLines.Any())
+                                            {
+                                                <div class="mt-2 text-xs text-gray-500 space-y-1">
+                                                    @foreach (var contextLine in result.ContextLines.Where(c => !c.IsMatch))
+                                                    {
+                                                        <div class="flex items-start gap-2">
+                                                            <span class="text-gray-400 font-mono">@contextLine.LineNumber</span>
+                                                            <pre class="font-mono opacity-60 flex-1">@contextLine.Content</pre>
+                                                        </div>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            
+                            @if (fileGroup.Count() > 10)
+                            {
+                                <div class="px-4 py-2 bg-gray-50 text-center text-xs text-gray-500">
+                                    还有 @(fileGroup.Count() - 10) 个匹配未显示
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public string SessionId { get; set; } = string.Empty;
+
+    private string _searchTerm = string.Empty;
+    private string _fileTypeFilter = string.Empty;
+    private SearchOptions _options = new();
+    private List<SearchResult>? _searchResults = null;
+    private bool _isSearching = false;
+    private string _debugMessage = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        Console.WriteLine($"[FileSearchPanel] 组件已初始化，SessionId: {SessionId}");
+        _debugMessage = $"搜索面板已加载，SessionId: {SessionId}";
+    }
+
+    private async Task PerformSearch()
+    {
+        Console.WriteLine($"[FileSearchPanel] PerformSearch 被调用，搜索词: '{_searchTerm}'");
+        _debugMessage = $"开始搜索: '{_searchTerm}'";
+        StateHasChanged();
+        await Task.Delay(10); // 确保UI更新
+        
+        if (string.IsNullOrWhiteSpace(_searchTerm))
+        {
+            Console.WriteLine("[FileSearchPanel] 搜索词为空，返回");
+            _debugMessage = "❌ 搜索词为空，请输入搜索内容";
+            StateHasChanged();
+            return;
+        }
+
+        _isSearching = true;
+        _searchResults = null;
+        StateHasChanged();
+
+        try
+        {
+            var workspacePath = CliExecutorService.GetSessionWorkspacePath(SessionId);
+            Console.WriteLine($"[FileSearchPanel] 工作区路径: {workspacePath}");
+            _debugMessage = $"工作区路径: {workspacePath}";
+            StateHasChanged();
+            
+            if (string.IsNullOrEmpty(workspacePath) || !Directory.Exists(workspacePath))
+            {
+                Console.WriteLine($"[FileSearchPanel] 工作区路径无效或不存在");
+                _debugMessage = $"❌ 工作区路径无效或不存在: {workspacePath}";
+                _searchResults = new List<SearchResult>();
+                return;
+            }
+            
+            // 设置文件类型过滤
+            _options.FileTypeFilter = _fileTypeFilter;
+            Console.WriteLine($"[FileSearchPanel] 文件类型过滤: {_fileTypeFilter}");
+
+            // 执行搜索
+            if (_options.UseRegex)
+            {
+                Console.WriteLine("[FileSearchPanel] 使用正则表达式搜索");
+                _debugMessage = "正在使用正则表达式搜索...";
+                StateHasChanged();
+                _searchResults = await FileSearchService.SearchByRegexAsync(workspacePath, _searchTerm, _options);
+            }
+            else
+            {
+                Console.WriteLine("[FileSearchPanel] 使用普通文本搜索");
+                _debugMessage = "正在搜索文件内容...";
+                StateHasChanged();
+                _searchResults = await FileSearchService.SearchInFilesAsync(workspacePath, _searchTerm, _options);
+            }
+            
+            Console.WriteLine($"[FileSearchPanel] 搜索完成，找到 {_searchResults?.Count ?? 0} 个结果");
+            _debugMessage = $"✅ 搜索完成，找到 {_searchResults?.Count ?? 0} 个匹配项";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FileSearchPanel] 搜索失败: {ex.Message}");
+            Console.WriteLine($"[FileSearchPanel] 异常堆栈: {ex.StackTrace}");
+            _debugMessage = $"❌ 搜索失败: {ex.Message}";
+            _searchResults = new List<SearchResult>();
+        }
+        finally
+        {
+            _isSearching = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await PerformSearch();
+        }
+    }
+
+    private MarkupString HighlightMatches(SearchResult result)
+    {
+        if (!result.Matches.Any())
+        {
+            return new MarkupString(System.Web.HttpUtility.HtmlEncode(result.LineContent));
+        }
+
+        var html = new System.Text.StringBuilder();
+        var lastIndex = 0;
+
+        foreach (var match in result.Matches.OrderBy(m => m.Start))
+        {
+            // 添加匹配前的文本
+            if (match.Start > lastIndex)
+            {
+                html.Append(System.Web.HttpUtility.HtmlEncode(result.LineContent.Substring(lastIndex, match.Start - lastIndex)));
+            }
+
+            // 添加高亮的匹配文本
+            var length = match.End - match.Start;
+            html.Append("<mark class=\"bg-yellow-200 text-yellow-900 font-semibold px-1 rounded\">");
+            html.Append(System.Web.HttpUtility.HtmlEncode(result.LineContent.Substring(match.Start, length)));
+            html.Append("</mark>");
+
+            lastIndex = match.End;
+        }
+
+        // 添加剩余文本
+        if (lastIndex < result.LineContent.Length)
+        {
+            html.Append(System.Web.HttpUtility.HtmlEncode(result.LineContent.Substring(lastIndex)));
+        }
+
+        return new MarkupString(html.ToString());
+    }
+}
+

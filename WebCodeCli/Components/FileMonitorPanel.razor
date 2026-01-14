@@ -1,0 +1,421 @@
+@using WebCodeCli.Domain.Domain.Model
+@using WebCodeCli.Domain.Domain.Service
+@implements IDisposable
+@inject IFileMonitorService FileMonitorService
+@inject ICliExecutorService CliExecutorService
+
+<div class="h-full flex flex-col bg-white">
+    <!-- 头部：控制栏 -->
+    <div class="p-3 sm:p-4 border-b border-gray-200 flex-shrink-0">
+        <div class="flex items-center justify-between gap-2 mb-3">
+            <div class="flex items-center gap-2">
+                <button @onclick="ToggleMonitoring" 
+                        class="@(_isMonitoring ? "btn-default" : "btn-primary") px-4 py-2 text-sm flex items-center gap-2">
+                    @if (_isMonitoring)
+                    {
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span>停止监控</span>
+                    }
+                    else
+                    {
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span>开始监控</span>
+                    }
+                </button>
+                
+                @if (_isMonitoring)
+                {
+                    <span class="flex items-center gap-1.5 text-sm text-green-600">
+                        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        <span class="font-semibold">监控中</span>
+                    </span>
+                }
+            </div>
+            
+            <div class="flex items-center gap-2">
+                <!-- 过滤器 -->
+                <select @bind="_filterType" 
+                        @bind:event="oninput"
+                        class="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500">
+                    <option value="all">全部类型</option>
+                    <option value="Created">创建</option>
+                    <option value="Modified">修改</option>
+                    <option value="Deleted">删除</option>
+                    <option value="Renamed">重命名</option>
+                </select>
+                
+                <button @onclick="ClearHistory" 
+                        class="btn-default px-4 py-2 text-sm flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                    </svg>
+                    清空
+                </button>
+            </div>
+        </div>
+        
+        <!-- 统计信息 -->
+        @if (_changes.Any())
+        {
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3">
+                <div class="bg-gray-50 rounded-lg p-2 border border-gray-200">
+                    <div class="text-xs text-gray-500">总计</div>
+                    <div class="text-lg font-bold text-gray-800">@_changes.Count</div>
+                </div>
+                <div class="bg-green-50 rounded-lg p-2 border border-green-200">
+                    <div class="text-xs text-green-600">创建</div>
+                    <div class="text-lg font-bold text-green-700">@_changes.Count(c => c.ChangeType == FileChangeType.Created)</div>
+                </div>
+                <div class="bg-blue-50 rounded-lg p-2 border border-blue-200">
+                    <div class="text-xs text-blue-600">修改</div>
+                    <div class="text-lg font-bold text-blue-700">@_changes.Count(c => c.ChangeType == FileChangeType.Modified)</div>
+                </div>
+                <div class="bg-red-50 rounded-lg p-2 border border-red-200">
+                    <div class="text-xs text-red-600">删除</div>
+                    <div class="text-lg font-bold text-red-700">@_changes.Count(c => c.ChangeType == FileChangeType.Deleted)</div>
+                </div>
+                <div class="bg-yellow-50 rounded-lg p-2 border border-yellow-200">
+                    <div class="text-xs text-yellow-600">重命名</div>
+                    <div class="text-lg font-bold text-yellow-700">@_changes.Count(c => c.ChangeType == FileChangeType.Renamed)</div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- 内容区域：事件流 -->
+    <div class="flex-1 overflow-y-auto p-4">
+        @if (!_changes.Any())
+        {
+            <!-- 无事件提示 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">暂无文件变更记录</p>
+                <p class="text-sm mt-2 text-gray-500">@(_isMonitoring ? "等待文件变更..." : "点击开始监控按钮启动实时监控")</p>
+            </div>
+        }
+        else
+        {
+            <!-- 事件列表 -->
+            <div class="space-y-2">
+                @foreach (var change in FilteredChanges)
+                {
+                    <div class="border border-gray-200 rounded-lg p-3 hover:shadow-md transition-shadow bg-white">
+                        <div class="flex items-start gap-3">
+                            <!-- 类型图标 -->
+                            <div class="flex-shrink-0 w-10 h-10 @GetChangeTypeColor(change.ChangeType) rounded-full flex items-center justify-center">
+                                @GetChangeTypeIcon(change.ChangeType)
+                            </div>
+                            
+                            <!-- 变更信息 -->
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2 mb-1 flex-wrap">
+                                    <span class="@GetChangeTypeBadgeClass(change.ChangeType) text-xs font-semibold px-2 py-0.5 rounded-full">
+                                        @GetChangeTypeLabel(change.ChangeType)
+                                    </span>
+                                    <span class="text-xs text-gray-500">@FormatTime(change.Timestamp)</span>
+                                    @if (change.IsDirectory)
+                                    {
+                                        <span class="bg-purple-100 text-purple-700 text-xs font-semibold px-2 py-0.5 rounded-full">📁 文件夹</span>
+                                    }
+                                    else if (!string.IsNullOrEmpty(change.FileExtension))
+                                    {
+                                        <span class="bg-gray-100 text-gray-700 text-xs font-mono px-2 py-0.5 rounded-full">@change.FileExtension</span>
+                                    }
+                                </div>
+                                
+                                <div class="text-sm font-mono text-gray-800 break-all">
+                                    @if (change.ChangeType == FileChangeType.Renamed && !string.IsNullOrEmpty(change.OldFilePath))
+                                    {
+                                        <div class="space-y-1">
+                                            <div class="text-red-600">- @GetRelativePath(change.OldFilePath)</div>
+                                            <div class="text-green-600">+ @GetRelativePath(change.FilePath)</div>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div>@GetRelativePath(change.FilePath)</div>
+                                    }
+                                </div>
+                                
+                                <!-- 详细信息 -->
+                                <div class="mt-2 space-y-1">
+                                    @if (change.FileSize.HasValue)
+                                    {
+                                        <div class="text-xs text-gray-500">
+                                            <span class="font-semibold">大小:</span> @FormatFileSize(change.FileSize.Value)
+                                        </div>
+                                    }
+                                    @if (change.LastModified.HasValue)
+                                    {
+                                        <div class="text-xs text-gray-500">
+                                            <span class="font-semibold">最后修改:</span> @change.LastModified.Value.ToString("yyyy-MM-dd HH:mm:ss")
+                                        </div>
+                                    }
+                                    @if (change.CreatedTime.HasValue && change.ChangeType == FileChangeType.Created)
+                                    {
+                                        <div class="text-xs text-gray-500">
+                                            <span class="font-semibold">创建时间:</span> @change.CreatedTime.Value.ToString("yyyy-MM-dd HH:mm:ss")
+                                        </div>
+                                    }
+                                    @if (!string.IsNullOrEmpty(change.ContentPreview))
+                                    {
+                                        <details class="mt-2">
+                                            <summary class="text-xs text-blue-600 cursor-pointer hover:text-blue-700 font-semibold">查看内容预览</summary>
+                                            <pre class="mt-1 text-[10px] bg-gray-50 p-2 rounded border border-gray-200 overflow-x-auto">@change.ContentPreview</pre>
+                                        </details>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public string SessionId { get; set; } = string.Empty;
+
+    private List<FileChangeEvent> _changes = new();
+    private bool _isMonitoring = false;
+    private string _filterType = "all";
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override void OnInitialized()
+    {
+        // 订阅文件变更事件
+        FileMonitorService.OnFileChanged += OnFileChanged;
+        
+        // 启动定时刷新（每秒刷新一次）
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await LoadChanges();
+            await SyncMonitoringState();
+        }, null, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+    }
+    
+    protected override void OnParametersSet()
+    {
+        base.OnParametersSet();
+        
+        // 从服务获取真实的监控状态（在参数设置后）
+        if (!string.IsNullOrEmpty(SessionId))
+        {
+            _isMonitoring = FileMonitorService.IsMonitoring(SessionId);
+        }
+    }
+
+    private async Task LoadChanges()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(SessionId))
+            {
+                return;
+            }
+            
+            _changes = await Task.Run(() => FileMonitorService.GetRecentChanges(SessionId, 100));
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载文件变更记录失败: {ex.Message}");
+        }
+    }
+    
+    private async Task SyncMonitoringState()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(SessionId))
+            {
+                return;
+            }
+            
+            var actualState = FileMonitorService.IsMonitoring(SessionId);
+            if (_isMonitoring != actualState)
+            {
+                _isMonitoring = actualState;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"同步监控状态失败: {ex.Message}");
+        }
+    }
+
+    private void OnFileChanged(object? sender, FileChangeEvent e)
+    {
+        if (e.SessionId == SessionId)
+        {
+            InvokeAsync(async () =>
+            {
+                await LoadChanges();
+            });
+        }
+    }
+
+    private void ToggleMonitoring()
+    {
+        try
+        {
+            if (_isMonitoring)
+            {
+                FileMonitorService.StopMonitoring(SessionId);
+                _isMonitoring = false;
+            }
+            else
+            {
+                var workspacePath = CliExecutorService.GetSessionWorkspacePath(SessionId);
+                FileMonitorService.StartMonitoring(SessionId, workspacePath);
+                _isMonitoring = true;
+            }
+            
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"切换监控状态失败: {ex.Message}");
+        }
+    }
+
+    private void ClearHistory()
+    {
+        FileMonitorService.ClearHistory(SessionId);
+        _changes.Clear();
+        StateHasChanged();
+    }
+
+    private IEnumerable<FileChangeEvent> FilteredChanges
+    {
+        get
+        {
+            if (_filterType == "all")
+            {
+                return _changes;
+            }
+            
+            if (Enum.TryParse<FileChangeType>(_filterType, out var type))
+            {
+                return _changes.Where(c => c.ChangeType == type);
+            }
+            
+            return _changes;
+        }
+    }
+
+    private string GetRelativePath(string fullPath)
+    {
+        try
+        {
+            var workspacePath = CliExecutorService.GetSessionWorkspacePath(SessionId);
+            return Path.GetRelativePath(workspacePath, fullPath);
+        }
+        catch
+        {
+            return fullPath;
+        }
+    }
+
+    private string GetChangeTypeColor(FileChangeType type)
+    {
+        return type switch
+        {
+            FileChangeType.Created => "bg-green-100 text-green-600",
+            FileChangeType.Modified => "bg-blue-100 text-blue-600",
+            FileChangeType.Deleted => "bg-red-100 text-red-600",
+            FileChangeType.Renamed => "bg-yellow-100 text-yellow-600",
+            _ => "bg-gray-100 text-gray-600"
+        };
+    }
+
+    private string GetChangeTypeBadgeClass(FileChangeType type)
+    {
+        return type switch
+        {
+            FileChangeType.Created => "bg-green-100 text-green-700",
+            FileChangeType.Modified => "bg-blue-100 text-blue-700",
+            FileChangeType.Deleted => "bg-red-100 text-red-700",
+            FileChangeType.Renamed => "bg-yellow-100 text-yellow-700",
+            _ => "bg-gray-100 text-gray-700"
+        };
+    }
+
+    private string GetChangeTypeLabel(FileChangeType type)
+    {
+        return type switch
+        {
+            FileChangeType.Created => "创建",
+            FileChangeType.Modified => "修改",
+            FileChangeType.Deleted => "删除",
+            FileChangeType.Renamed => "重命名",
+            _ => "未知"
+        };
+    }
+
+    private MarkupString GetChangeTypeIcon(FileChangeType type)
+    {
+        var icon = type switch
+        {
+            FileChangeType.Created => "<svg class=\"w-5 h-5\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M12 4v16m8-8H4\"></path></svg>",
+            FileChangeType.Modified => "<svg class=\"w-5 h-5\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z\"></path></svg>",
+            FileChangeType.Deleted => "<svg class=\"w-5 h-5\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M20 12H4\"></path></svg>",
+            FileChangeType.Renamed => "<svg class=\"w-5 h-5\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4\"></path></svg>",
+            _ => "<svg class=\"w-5 h-5\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z\"></path></svg>"
+        };
+        return new MarkupString(icon);
+    }
+
+    private string FormatTime(DateTime time)
+    {
+        var diff = DateTime.Now - time;
+        
+        if (diff.TotalSeconds < 10)
+            return "刚刚";
+        if (diff.TotalSeconds < 60)
+            return $"{(int)diff.TotalSeconds} 秒前";
+        if (diff.TotalMinutes < 60)
+            return $"{(int)diff.TotalMinutes} 分钟前";
+        if (diff.TotalHours < 24)
+            return $"{(int)diff.TotalHours} 小时前";
+        
+        return time.ToString("MM-dd HH:mm:ss");
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+
+    public void Dispose()
+    {
+        FileMonitorService.OnFileChanged -= OnFileChanged;
+        _refreshTimer?.Dispose();
+        
+        // 注意：不在这里停止监控服务
+        // 监控服务是全局的，应该由用户手动控制启动/停止
+        // 组件销毁不应该影响监控服务的运行状态
+    }
+}
+

@@ -1,0 +1,1862 @@
+@page "/code-assistant"
+@namespace WebCodeCli.Pages
+@using WebCodeCli.Domain.Domain.Model
+@using System.Text
+@using WebCodeCli.Pages
+@using WebCodeCli.Components
+@inject IJSRuntime JSRuntime
+
+<PageTitle>编程助手</PageTitle>
+
+<!-- 移动端折叠/展开按钮 (固定在屏幕中间右侧) -->
+<button @onclick="TogglePreviewPanel"
+        class="lg:hidden fixed top-1/2 right-2 -translate-y-1/2 z-50 w-10 h-10 bg-gray-800 hover:bg-black text-white rounded-full shadow-md hover:shadow-lg transition-all flex items-center justify-center active:scale-95"
+        title="@(_isPreviewCollapsed ? "展开预览" : "折叠预览")">
+    @if (_isPreviewCollapsed) 
+    {
+        <!-- 展开图标 (向上箭头) -->
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path>
+        </svg>
+    }
+    else
+    {
+        <!-- 折叠图标 (向下箭头) -->
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+        </svg>
+    }
+</button>
+
+<div class="flex flex-col lg:flex-row h-screen bg-gray-50 overflow-hidden">
+    <!-- 会话列表侧边栏（桌面端） -->
+    @if (_showSessionList)
+    {
+        <div class="hidden lg:block fixed inset-y-0 left-0 w-80 bg-white shadow-2xl z-50 transform transition-transform duration-300 ease-in-out">
+            <!-- 头部 -->
+            <div class="p-4 border-b-2 border-gray-200 flex items-center justify-between bg-gray-50">
+                <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    会话历史
+                </h2>
+                <button @onclick="ToggleSessionList" class="p-2 hover:bg-gray-200 rounded-lg transition-colors" title="关闭">
+                    <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- 新建会话按钮 -->
+            <div class="p-4 border-b border-gray-200">
+                <button @onclick="CreateNewSession" class="w-full btn-primary flex items-center justify-center gap-2 py-3 shadow-md hover:shadow-lg transition-all">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                    </svg>
+                    新建会话
+                </button>
+            </div>
+            
+            <!-- 会话列表滚动区域 -->
+            <div class="flex-1 overflow-y-auto" style="height: calc(100vh - 180px);">
+                @if (_isLoadingSessions)
+                {
+                    <!-- 加载动画 -->
+                    <div class="p-8 text-center">
+                        <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-gray-700 mb-4"></div>
+                        <p class="text-sm text-gray-500">加载会话列表...</p>
+                    </div>
+                }
+                else if (_sessions.Any())
+                {
+                    <div class="p-2 space-y-1">
+                        @foreach (var session in _sessions)
+                        {
+                            <div class="@GetSessionItemClass(session) @(_isLoadingSession && _currentSession?.SessionId == session.SessionId ? "opacity-50 pointer-events-none" : "")" 
+                                 @onclick="() => LoadSession(session.SessionId)"
+                                 style="transition: all 0.2s ease-in-out;">
+                                <div class="flex-1 min-w-0">
+                                    <h3 class="font-semibold truncate text-sm">@session.Title</h3>
+                                    <p class="text-xs text-gray-500 mt-1">@FormatDateTime(session.UpdatedAt)</p>
+                                </div>
+                                <div class="flex items-center gap-1 flex-shrink-0">
+                                    @if (_isLoadingSession && _currentSession?.SessionId == session.SessionId)
+                                    {
+                                        <!-- 加载中指示器 -->
+                                        <div class="inline-block animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-gray-700"></div>
+                                    }
+                                    else
+                                    {
+                                        <button @onclick:stopPropagation="true" @onclick="() => ShowRenameDialog(session)" class="p-1.5 hover:bg-gray-100 rounded-lg transition-colors" title="重命名">
+                                            <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                            </svg>
+                                        </button>
+                                        <button @onclick:stopPropagation="true" @onclick="() => ShowDeleteDialog(session)" class="p-1.5 hover:bg-red-100 rounded-lg transition-colors" title="删除">
+                                            <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                            </svg>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="p-8 text-center text-gray-400">
+                        <div class="w-20 h-20 bg-gray-100 border border-gray-200 rounded-full flex items-center justify-center mx-auto mb-4 shadow-md">
+                            <svg class="w-10 h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
+                            </svg>
+                        </div>
+                        <p class="text-base font-semibold text-gray-600">暂无会话记录</p>
+                        <p class="text-sm mt-2 text-gray-500">点击上方按钮创建新会话</p>
+                    </div>
+                }
+            </div>
+        </div>
+        
+        <!-- 移动端全屏模态框 -->
+        <div class="lg:hidden fixed inset-0 bg-white z-50 flex flex-col">
+            <!-- 头部 -->
+            <div class="p-4 border-b-2 border-gray-200 flex items-center justify-between bg-gray-50 flex-shrink-0">
+                <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    会话历史
+                </h2>
+                <button @onclick="ToggleSessionList" class="p-2 hover:bg-gray-200 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center" title="关闭">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- 新建会话按钮 -->
+            <div class="p-4 border-b border-gray-200 flex-shrink-0">
+                <button @onclick="CreateNewSession" class="w-full btn-primary flex items-center justify-center gap-2 py-3 min-h-[44px] shadow-md hover:shadow-lg transition-all">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                    </svg>
+                    新建会话
+                </button>
+            </div>
+            
+            <!-- 会话列表滚动区域 -->
+            <div class="flex-1 overflow-y-auto">
+                @if (_isLoadingSessions)
+                {
+                    <!-- 加载动画 -->
+                    <div class="p-8 text-center">
+                        <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-gray-700 mb-4"></div>
+                        <p class="text-sm text-gray-500">加载会话列表...</p>
+                    </div>
+                }
+                else if (_sessions.Any())
+                {
+                    <div class="p-3 space-y-2">
+                        @foreach (var session in _sessions)
+                        {
+                            <div class="@GetSessionItemClass(session) @(_isLoadingSession && _currentSession?.SessionId == session.SessionId ? "opacity-50 pointer-events-none" : "")" 
+                                 @onclick="() => LoadSession(session.SessionId)" 
+                                 style="min-height: 44px; transition: all 0.2s ease-in-out;">
+                                <div class="flex-1 min-w-0">
+                                    <h3 class="font-semibold truncate text-sm">@session.Title</h3>
+                                    <p class="text-xs text-gray-500 mt-1">@FormatDateTime(session.UpdatedAt)</p>
+                                </div>
+                                <div class="flex items-center gap-1 flex-shrink-0">
+                                    @if (_isLoadingSession && _currentSession?.SessionId == session.SessionId)
+                                    {
+                                        <!-- 加载中指示器 -->
+                                        <div class="inline-block animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-gray-700"></div>
+                                    }
+                                    else
+                                    {
+                                        <button @onclick:stopPropagation="true" @onclick="() => ShowRenameDialog(session)" class="p-2 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center" title="重命名">
+                                            <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                            </svg>
+                                        </button>
+                                        <button @onclick:stopPropagation="true" @onclick="() => ShowDeleteDialog(session)" class="p-2 hover:bg-red-100 active:bg-red-200 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center" title="删除">
+                                            <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                            </svg>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="p-8 text-center text-gray-400">
+                        <div class="w-20 h-20 bg-gray-100 border border-gray-200 rounded-full flex items-center justify-center mx-auto mb-4 shadow-md">
+                            <svg class="w-10 h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
+                            </svg>
+                        </div>
+                        <p class="text-base font-semibold text-gray-600">暂无会话记录</p>
+                        <p class="text-sm mt-2 text-gray-500">点击上方按钮创建新会话</p>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+    
+     <!-- 右侧预览区 -->
+    <div class="@(_isPreviewCollapsed ? "hidden lg:flex" : "flex") flex-1 bg-white/60 backdrop-blur-sm p-3 sm:p-4 lg:p-6 flex-col overflow-hidden min-w-0 transition-all duration-300 relative">
+        <!-- Tabs -->
+        <div class="mb-3 sm:mb-4 lg:mb-5 border-b-2 border-gray-200 flex-shrink-0 bg-white/80 rounded-t-lg sm:rounded-t-xl -mx-3 sm:-mx-4 lg:-mx-6 px-3 sm:px-4 lg:px-6 overflow-x-auto overflow-y-hidden">
+            <nav class="-mb-0.5 flex space-x-1 min-w-max">
+                <button @onclick='() => _activeTabKey = "1"'
+                        class="@(GetTabClass("1")) whitespace-nowrap py-2 sm:py-3 px-3 sm:px-4 border-b-2 font-semibold text-xs sm:text-sm transition-all rounded-t-lg flex-shrink-0">
+                    <div class="flex items-center gap-1.5 sm:gap-2">
+                        <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        <span class="hidden sm:inline">输出结果</span>
+                        <span class="sm:hidden">输出</span>
+                    </div>
+                </button>
+                <button @onclick='() => _activeTabKey = "2"'
+                        class="@(GetTabClass("2")) whitespace-nowrap py-2 sm:py-3 px-3 sm:px-4 border-b-2 font-semibold text-xs sm:text-sm transition-all rounded-t-lg flex-shrink-0">
+                    <div class="flex items-center gap-1.5 sm:gap-2">
+                        <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                        </svg>
+                        <span class="hidden sm:inline">工作区文件</span>
+                        <span class="sm:hidden">文件</span>
+                    </div>
+                </button>
+                <button @onclick='() => _activeTabKey = "3"'
+                        class="@(GetTabClass("3")) whitespace-nowrap py-2 sm:py-3 px-3 sm:px-4 border-b-2 font-semibold text-xs sm:text-sm transition-all rounded-t-lg flex-shrink-0">
+                    <div class="flex items-center gap-1.5 sm:gap-2">
+                        <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path>
+                        </svg>
+                        <span class="hidden sm:inline">HTML 预览</span>
+                        <span class="sm:hidden">预览</span>
+                    </div>
+                </button>
+            </nav>
+        </div>
+
+        <!-- 进度追踪器（全局显示，不受标签页影响，移动端隐藏） -->
+        <div class="hidden lg:block mb-3">
+            <ProgressTracker @ref="_progressTracker" CanCancel="true" OnCancel="CancelExecution" />
+        </div>
+
+        <!-- Tab Content -->
+        <div class="flex-1 overflow-hidden min-w-0">
+            @if (_activeTabKey == "1")
+            {
+                <!-- 输出结果 -->
+                <div class="bg-white rounded-xl sm:rounded-2xl shadow-lg border border-gray-200 h-full flex flex-col overflow-hidden">
+                    <div id="output-container" class="flex-1 overflow-auto p-2 sm:p-3" style="contain: layout style paint; content-visibility: auto;">
+                        @if (_isJsonlOutputActive && _jsonlEvents.Any())
+                        {
+                            <div class="space-y-3">
+                                <!-- 显示加载状态 -->
+                                @if (_jsonlEvents.Count > InitialDisplayCount)
+                                {
+                                    <div class="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg px-4 py-2 text-xs flex items-center gap-2">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                        </svg>
+                                        <span>已加载 @Math.Min(_displayedEventCount, _jsonlEvents.Count) / @_jsonlEvents.Count 条消息</span>
+                                    </div>
+                                }
+                                
+                                @if (!string.IsNullOrEmpty(_activeThreadId))
+                                {
+                                    <div class="border border-gray-300 bg-gray-50 text-gray-800 rounded-lg px-4 py-3 shadow-sm">
+                                        <div class="text-xs uppercase tracking-wide font-semibold text-gray-700">当前 Thread</div>
+                                        <div class="font-mono text-sm mt-1 break-words">@_activeThreadId</div>
+                                    </div>
+                                }
+
+                                @{
+                                    var groups = GetPagedJsonlEventGroups();
+                                }
+
+                                <!-- 加载更多按钮 -->
+                                @if (_hasMoreEvents && !_isLoading)
+                                {
+                                    <div class="flex justify-center py-3">
+                                        <button @onclick="LoadMoreEvents"
+                                                class="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-all flex items-center gap-2 shadow-sm hover:shadow">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                            </svg>
+                                            <span>加载更多 (剩余 @(_jsonlEvents.Count - _displayedEventCount) 条)</span>
+                                        </button>
+                                    </div>
+                                }
+
+                                @foreach (var group in groups)
+                                {
+                                    if (!group.IsCollapsible)
+                                    {
+                                        var evt = group.Items[0];
+                                        var containerAccent = GetEventContainerAccent(evt);
+                                        var badgeClass = GetEventBadgeClass(evt);
+                                        var badgeLabel = GetEventBadgeLabel(evt);
+
+                                        <div @key="@group.Id" class="@($"border border-gray-200 rounded-lg p-4 shadow-sm transition-colors {containerAccent}")">
+                                            <div class="flex items-center justify-between gap-3">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="@($"text-xs font-semibold px-2 py-0.5 rounded-full {badgeClass}")">@badgeLabel</span>
+                                                    <span class="text-sm font-semibold text-gray-800">@evt.Title</span>
+                                                </div>
+                                                <span class="text-xs text-gray-400">@evt.Type</span>
+                                            </div>
+                                            <div class="mt-2 text-sm text-gray-700 markdown-preview leading-relaxed">
+                                                @if (evt.ItemType == "todo_list")
+                                                {
+                                                    @* 待办列表使用预格式化显示，确保换行 *@
+                                                    <div style="white-space: pre-line;">@evt.Content</div>
+                                                }
+                                                else
+                                                {
+                                                    @((MarkupString)RenderMarkdown(evt.Content))
+                                                }
+                                            </div>
+                                            @if (evt.Usage != null)
+                                            {
+                                                <div class="mt-3 bg-gray-50 border border-dashed border-gray-200 rounded-lg px-3 py-2">
+                                                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Token 使用情况</div>
+                                                    <div class="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-gray-600">
+                                                        <div class="flex flex-col">
+                                                            <span class="font-medium text-gray-500">输入 Tokens</span>
+                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.InputTokens)</span>
+                                                        </div>
+                                                        <div class="flex flex-col">
+                                                            <span class="font-medium text-gray-500">缓存输入</span>
+                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.CachedInputTokens)</span>
+                                                        </div>
+                                                        <div class="flex flex-col">
+                                                            <span class="font-medium text-gray-500">输出 Tokens</span>
+                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.OutputTokens)</span>
+                                                        </div>
+                                                        <div class="flex flex-col">
+                                                            <span class="font-medium text-gray-500">累计 Tokens</span>
+                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.TotalTokens)</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        var isOpen = IsJsonlGroupOpen(group);
+                                        var defaultOpen = !group.IsCompleted;
+                                        var statusText = group.IsCompleted ? "已完成" : "进行中";
+                                        var statusClass = group.IsCompleted ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200";
+                                        
+                                        var isCommand = group.Kind == "command_execution";
+                                        // Codex Style Enhancements
+                                        var containerClass = isCommand 
+                                            ? "border border-gray-300 rounded-lg shadow-sm overflow-hidden bg-white ring-1 ring-black/5 my-2" 
+                                            : "border border-blue-100 rounded-lg shadow-sm overflow-hidden bg-white my-2";
+                                        
+                                        var headerClass = isCommand
+                                            ? "w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-between gap-3 text-left border-b border-gray-100 group"
+                                            : "w-full px-4 py-3 bg-blue-50/30 hover:bg-blue-50 transition-colors flex items-center justify-between gap-3 text-left border-b border-blue-50 group";
+
+                                        <div @key="group.Id" class="@containerClass">
+                                            <button type="button"
+                                                    class="@headerClass"
+                                                    @onclick="() => ToggleJsonlGroup(group.Id, defaultOpen)">
+                                                <div class="min-w-0 flex items-center gap-3 flex-1">
+                                                    <!-- Icon -->
+                                                    <div class="flex-shrink-0">
+                                                        @if (isCommand)
+                                                        {
+                                                            <div class="w-8 h-8 rounded bg-gray-200 flex items-center justify-center text-gray-600 group-hover:bg-gray-300 transition-colors">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                                                </svg>
+                                                            </div>
+                                                        }
+                                                        else
+                                                        {
+                                                            <div class="w-8 h-8 rounded bg-blue-100 flex items-center justify-center text-blue-600 group-hover:bg-blue-200 transition-colors">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                                </svg>
+                                                            </div>
+                                                        }
+                                                    </div>
+
+                                                    <div class="flex flex-col min-w-0 flex-1">
+                                                        <div class="flex items-center gap-2">
+                                                            <span class="@($"text-sm font-semibold truncate {(isCommand ? "font-mono text-gray-700" : "text-gray-800")}")">@group.Title</span>
+                                                        </div>
+                                                        <div class="flex items-center gap-2 mt-0.5">
+                                                            <span class="@($"text-[10px] px-1.5 py-px rounded border {statusClass}")">@statusText</span>
+                                                            @if (!group.IsCompleted) {
+                                                                 <span class="relative flex h-2 w-2">
+                                                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                                                  </span>
+                                                            }
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="flex items-center gap-3 flex-shrink-0 border-l border-gray-200 pl-3">
+                                                    <div class="text-right hidden sm:block">
+                                                        <div class="text-[10px] text-gray-400">Events</div>
+                                                        <div class="text-xs font-mono font-medium text-gray-600">@group.Items.Count</div>
+                                                    </div>
+                                                    <svg class="@($"w-5 h-5 text-gray-400 transform transition-transform duration-200 {(isOpen ? "rotate-180" : "")}")"
+                                                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                                    </svg>
+                                                </div>
+                                            </button>
+
+                                            @if (isOpen)
+                                            {
+                                                <div class="p-3 space-y-2 bg-white">
+                                                    @foreach (var evt in group.Items)
+                                                    {
+                                                        var badgeClass = GetEventBadgeClass(evt);
+                                                        var badgeLabel = GetEventBadgeLabel(evt);
+                                                        var containerAccent = GetEventContainerAccent(evt);
+
+                                                        <div class="@($"border border-gray-200 rounded-lg p-3 shadow-sm transition-colors {containerAccent}")">
+                                                            <div class="flex items-center justify-between gap-3">
+                                                                <div class="flex items-center gap-2 min-w-0">
+                                                                    <span class="@($"text-xs font-semibold px-2 py-0.5 rounded-full {badgeClass}")">@badgeLabel</span>
+                                                                    <span class="text-sm font-semibold text-gray-800 truncate">@evt.Title</span>
+                                                                </div>
+                                                                <span class="text-xs text-gray-400 flex-shrink-0">@evt.Type</span>
+                                                            </div>
+                                                            <div class="mt-2 text-sm text-gray-700 markdown-preview leading-relaxed">
+                                                                @if (evt.ItemType == "todo_list")
+                                                                {
+                                                                    @* 待办列表使用预格式化显示，确保换行 *@
+                                                                    <div style="white-space: pre-line;">@evt.Content</div>
+                                                                }
+                                                                else
+                                                                {
+                                                                    @((MarkupString)RenderMarkdown(evt.Content))
+                                                                }
+                                                            </div>
+                                                            @if (evt.Usage != null)
+                                                            {
+                                                                <div class="mt-3 bg-gray-50 border border-dashed border-gray-200 rounded-lg px-3 py-2">
+                                                                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Token 使用情况</div>
+                                                                    <div class="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-gray-600">
+                                                                        <div class="flex flex-col">
+                                                                            <span class="font-medium text-gray-500">输入 Tokens</span>
+                                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.InputTokens)</span>
+                                                                        </div>
+                                                                        <div class="flex flex-col">
+                                                                            <span class="font-medium text-gray-500">缓存输入</span>
+                                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.CachedInputTokens)</span>
+                                                                        </div>
+                                                                        <div class="flex flex-col">
+                                                                            <span class="font-medium text-gray-500">输出 Tokens</span>
+                                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.OutputTokens)</span>
+                                                                        </div>
+                                                                        <div class="flex flex-col">
+                                                                            <span class="font-medium text-gray-500">累计 Tokens</span>
+                                                                            <span class="font-mono text-sm text-gray-800">@FormatTokenValue(evt.Usage.TotalTokens)</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        </div>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="markdown-preview text-xs sm:text-sm leading-relaxed p-2 sm:p-3 lg:p-4 bg-white border border-gray-200 rounded" style="min-height: 100%;">
+                                @((MarkupString)RenderMarkdown(_rawOutput))
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_activeTabKey == "2")
+            {
+                <!-- 工作区文件 -->
+                <div class="bg-white rounded-xl sm:rounded-2xl shadow-lg border border-gray-200 h-full flex flex-col overflow-hidden">
+                    <!-- 子标签导航 -->
+                    <div class="border-b border-gray-200 px-2 sm:px-4 py-2 bg-gray-50 overflow-x-auto">
+                        <nav class="flex space-x-1 sm:space-x-2 min-w-max">
+                            <button @onclick='() => _workspaceSubTab = "files"' 
+                                    class="@GetWorkspaceSubTabClass("files") whitespace-nowrap py-2 px-2 sm:px-3 text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center gap-1 sm:gap-1.5">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                                </svg>
+                                <span>文件树</span>
+                            </button>
+                            <button @onclick='() => _workspaceSubTab = "history"' 
+                                    class="@GetWorkspaceSubTabClass("history") whitespace-nowrap py-2 px-2 sm:px-3 text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center gap-1 sm:gap-1.5">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <span>版本历史</span>
+                            </button>
+                            <button @onclick='() => _workspaceSubTab = "diff"' 
+                                    class="@GetWorkspaceSubTabClass("diff") whitespace-nowrap py-2 px-2 sm:px-3 text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center gap-1 sm:gap-1.5">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                                </svg>
+                                <span>文件对比</span>
+                            </button>
+                            <button @onclick='() => _workspaceSubTab = "monitor"' 
+                                    class="@GetWorkspaceSubTabClass("monitor") whitespace-nowrap py-2 px-2 sm:px-3 text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center gap-1 sm:gap-1.5">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                                </svg>
+                                <span>实时监控</span>
+                            </button>
+                            <button @onclick='() => _workspaceSubTab = "search"' 
+                                    class="@GetWorkspaceSubTabClass("search") whitespace-nowrap py-2 px-2 sm:px-3 text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center gap-1 sm:gap-1.5">
+                                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                                <span>文件搜索</span>
+                            </button>
+                        </nav>
+                    </div>
+                    
+                    <!-- 子标签内容 -->
+                    <div class="flex-1 overflow-hidden">
+                        @if (_workspaceSubTab == "files")
+                        {
+                            <!-- 原有的文件树视图 -->
+                            @if (_workspaceFiles == null || !_workspaceFiles.Any())
+                            {
+                                <div class="h-full flex flex-col">
+                                    <div class="p-3 sm:p-4 border-b border-gray-200 flex items-center gap-2 sm:gap-3 flex-shrink-0">
+                                        <span class="font-bold text-sm sm:text-base flex-1 text-gray-800">工作区文件</span>
+                                        <button @onclick="ShowCreateFolderDialog"
+                                                class="btn-default text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 shadow-sm hover:shadow-md transition-all">
+                                            <svg class="w-3 h-3 sm:w-3.5 sm:h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+                                            </svg>
+                                            <span class="hidden sm:inline">新建</span>
+                                        </button>
+                                        <label class="btn-primary text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-md hover:shadow-lg transition-all">
+                                            @if (_isUploading)
+                                            {
+                                                <div class="animate-spin h-3 w-3 border-2 border-white rounded-full border-t-transparent"></div>
+                                            }
+                                            else
+                                            {
+                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                                </svg>
+                                            }
+                                            上传
+                                            <InputFile OnChange="HandleFileUpload" 
+                                                       disabled="@_isUploading"
+                                                       class="hidden" />
+                                        </label>
+                                    </div>
+                                    <div class="flex flex-col items-center justify-center flex-1 text-gray-400 bg-gray-50 rounded-lg sm:rounded-xl m-3 sm:m-4">
+                                        <div class="w-16 h-16 sm:w-20 sm:h-20 bg-gray-100 border border-gray-200 rounded-full flex items-center justify-center mb-3 sm:mb-4 shadow-md">
+                                            <svg class="w-8 h-8 sm:w-10 sm:h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                                            </svg>
+                                        </div>
+                                        <p class="text-sm sm:text-base font-semibold text-gray-600">暂无文件</p>
+                                        <p class="text-xs sm:text-sm mt-1.5 sm:mt-2 text-gray-500">点击上方按钮上传文件到工作区</p>
+                                    </div>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="h-full flex flex-col">
+                                    <div class="p-3 sm:p-4 border-b border-gray-200 flex flex-col gap-2 flex-shrink-0">
+                                        <!-- 第一行：主要操作 -->
+                                        <div class="flex items-center gap-2 sm:gap-3">
+                                            <span class="font-bold text-sm sm:text-base flex-1 text-gray-800">工作区文件</span>
+                                            <button @onclick="ShowCreateFolderDialog"
+                                                    class="btn-default text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 shadow-sm hover:shadow-md transition-all">
+                                                <svg class="w-3 h-3 sm:w-3.5 sm:h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+                                                </svg>
+                                                <span class="hidden sm:inline">新建</span>
+                                            </button>
+                                            <label class="btn-default text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm hover:shadow-md transition-all">
+                                                @if (_isUploading)
+                                                {
+                                                    <div class="animate-spin h-3 w-3 border-2 border-gray-600 rounded-full border-t-transparent"></div>
+                                                }
+                                                else
+                                                {
+                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                                    </svg>
+                                                }
+                                                上传
+                                                <InputFile OnChange="HandleFileUpload" 
+                                                           disabled="@_isUploading"
+                                                           class="hidden" />
+                                            </label>
+                                            <button @onclick="DownloadAllFiles"
+                                                    class="btn-primary text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 shadow-md hover:shadow-lg transition-all">
+                                                <svg class="w-3 h-3 sm:w-3.5 sm:h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                                </svg>
+                                                <span class="hidden sm:inline">下载全部</span>
+                                                <span class="sm:hidden">下载</span>
+                                            </button>
+                                        </div>
+                                        
+                                        <!-- 第二行：批量操作 -->
+                                        @if (_selectedFiles.Any())
+                                        {
+                                            <div class="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                                                <span class="text-xs text-blue-700 font-semibold">已选择 @_selectedFiles.Count 项</span>
+                                                <div class="flex-1"></div>
+                                                <button @onclick='() => ShowBatchOperationDialog("move")'
+                                                        class="btn-default text-[10px] py-1 px-2 flex items-center gap-1">
+                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                                                    </svg>
+                                                    移动
+                                                </button>
+                                                <button @onclick='() => ShowBatchOperationDialog("copy")'
+                                                        class="btn-default text-[10px] py-1 px-2 flex items-center gap-1">
+                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                                    </svg>
+                                                    复制
+                                                </button>
+                                                <button @onclick='() => ShowBatchOperationDialog("delete")'
+                                                        class="btn-default text-[10px] py-1 px-2 flex items-center gap-1 text-red-600 hover:bg-red-50">
+                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                    </svg>
+                                                    删除
+                                                </button>
+                                                <button @onclick="() => _selectedFiles.Clear()"
+                                                        class="btn-default text-[10px] py-1 px-2">
+                                                    取消
+                                                </button>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <div class="flex items-center gap-2">
+                                                <button @onclick="ToggleSelectAll"
+                                                        class="btn-default text-[10px] py-1 px-2 flex items-center gap-1">
+                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                                                    </svg>
+                                                    全选
+                                                </button>
+                                            </div>
+                                        }
+                                    </div>
+                                    <div class="flex-1 overflow-y-auto p-2 sm:p-3" @ref="_fileTreeScrollContainer" @onscroll="OnFileTreeScroll">
+                                        <div class="space-y-0.5 sm:space-y-1">
+                                            @foreach (var file in GetVisibleNodes(_workspaceFiles))
+                                            {
+                                                @RenderFileNode(file, 0)
+                                            }
+                                            @if (_hasMoreNodes)
+                                            {
+                                                <div class="text-center py-3">
+                                                    <button @onclick="LoadMoreNodes" class="btn-default text-xs py-1.5 px-4">
+                                                        <span>加载更多 (@(_workspaceFiles.Count - _currentVisibleNodes) 项)</span>
+                                                    </button>
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        }
+                        else if (_workspaceSubTab == "history")
+                        {
+                            <VersionHistoryPanel SessionId="@_sessionId" 
+                                                 OnCompareToCurrent="HandleCompareRequest" />
+                        }
+                        else if (_workspaceSubTab == "diff")
+                        {
+                            <DiffViewerPanel SessionId="@_sessionId" 
+                                            InitialFilePath="@_diffFilePath"
+                                            InitialFromCommit="@_diffFromCommit"
+                                            InitialToCommit="@_diffToCommit" />
+                        }
+                        else if (_workspaceSubTab == "monitor")
+                        {
+                            <FileMonitorPanel SessionId="@_sessionId" />
+                        }
+                        else if (_workspaceSubTab == "search")
+                        {
+                            <FileSearchPanel SessionId="@_sessionId" />
+                        }
+                    </div>
+                </div>
+            }
+            else if (_activeTabKey == "3")
+            {
+                <!-- HTML 预览 -->
+                <div class="bg-white rounded-xl sm:rounded-2xl shadow-lg border border-gray-200 h-full flex flex-col overflow-hidden">
+                    @if (string.IsNullOrEmpty(_selectedHtmlFile) && !_detectedFrontendProjects.Any())
+                    {
+                        <div class="flex flex-col items-center justify-center h-full text-gray-400 bg-gray-50 rounded-lg sm:rounded-xl m-3 sm:m-4">
+                            <div class="w-16 h-16 sm:w-20 sm:h-20 bg-gray-100 rounded-full flex items-center justify-center mb-3 sm:mb-4 shadow-md border border-gray-200">
+                                <svg class="w-8 h-8 sm:w-10 sm:h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path>
+                                </svg>
+                            </div>
+                            <p class="text-sm sm:text-base font-semibold text-gray-600 text-center px-4 sm:px-8">请从工作区文件中选择一个 HTML 文件进行预览</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <!-- 预览模式选择器 -->
+                        @if (_detectedFrontendProjects.Any())
+                        {
+                            <div class="p-3 sm:p-4 border-b border-gray-200 bg-gradient-to-r from-purple-50 to-white">
+                                <div class="flex flex-col gap-3">
+                                    <div class="flex items-center gap-2">
+                                        <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path>
+                                        </svg>
+                                        <span class="text-sm font-semibold text-gray-700">前端项目预览</span>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                        <select @bind="_selectedPreviewMode" class="px-3 py-2 border border-gray-200 rounded-lg text-xs focus:ring-2 focus:ring-purple-500">
+                                            <option value="static">静态预览</option>
+                                            <option value="dev">开发服务器</option>
+                                            <option value="build">构建预览</option>
+                                        </select>
+                                        
+                                        @if (_selectedPreviewMode != "static")
+                                        {
+                                            <select @bind="_selectedFrontendProject" class="px-3 py-2 border border-gray-200 rounded-lg text-xs focus:ring-2 focus:ring-purple-500">
+                                                @foreach (var proj in _detectedFrontendProjects)
+                                                {
+                                                    <option value="@proj.Key">(@FrontendProjectDetector.GetProjectTypeName(proj.Type))</option>
+                                                }
+                                            </select>
+                                            
+                                            <button @onclick="StartPreview" 
+                                                    disabled="@_isServerStarting"
+                                                    class="btn-primary text-xs py-2 px-3 flex items-center justify-center gap-2 disabled:opacity-50">
+                                                @if (_isServerStarting)
+                                                {
+                                                    <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                                                    <span>启动中...</span>
+                                                }
+                                                else if (_currentDevServer != null)
+                                                {
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                    </svg>
+                                                    <span>停止</span>
+                                                }
+                                                else
+                                                {
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                    </svg>
+                                                    <span>启动预览</span>
+                                                }
+                                            </button>
+                                        }
+                                    </div>
+                                    
+                                    <!-- 服务器状态显示 -->
+                                    @if (_currentDevServer != null)
+                                    {
+                                        <div class="flex items-center gap-2 text-xs p-2 bg-green-50 border border-green-200 rounded-lg">
+                                            <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                            <span class="text-green-700 font-semibold">运行中</span>
+                                            <span class="text-gray-500">|</span>
+                                            <span class="text-gray-600">端口: @_currentDevServer.Port</span>
+                                            <span class="text-gray-500">|</span>
+                                            <span class="text-gray-600">@_currentDevServer.ProjectInfo.Name</span>
+                                            <button @onclick="StopCurrentServer" class="ml-auto text-red-600 hover:text-red-800">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        
+                        @if (!string.IsNullOrEmpty(_selectedHtmlFile))
+                        {
+                            <div class="p-3 sm:p-4 border-b-2 border-gray-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 flex-shrink-0 bg-gray-50">
+                                <div class="flex items-center gap-1.5 sm:gap-2 flex-1 min-w-0">
+                                    <span class="font-semibold text-xs sm:text-sm text-gray-700 whitespace-nowrap">预览:</span>
+                                    <code class="text-[10px] sm:text-xs bg-gray-100 text-gray-800 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg font-mono border border-gray-300 shadow-sm truncate max-w-full">@_selectedHtmlFile</code>
+                                </div>
+                                <div class="flex items-center gap-1.5 sm:gap-2 w-full sm:w-auto">
+                                    <button @onclick="OpenHtmlInNewWindow"
+                                            class="btn-primary text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 shadow-md hover:shadow-lg transition-all flex-1 sm:flex-initial justify-center">
+                                        <svg class="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                                        </svg>
+                                        打开
+                                    </button>
+                                    <button @onclick="RefreshHtmlPreview"
+                                            class="btn-default text-[10px] sm:text-xs py-1.5 px-2 sm:px-3 flex items-center gap-1 sm:gap-1.5 shadow-sm hover:shadow-md transition-all flex-1 sm:flex-initial justify-center">
+                                        <svg class="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                        </svg>
+                                        刷新
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                        
+                        <div class="flex-1 border-2 border-gray-200 bg-white rounded-lg sm:rounded-xl overflow-auto m-2 sm:m-3 lg:m-4 shadow-inner">
+                            <iframe id="html-preview-frame"
+                                    src="@_htmlPreviewUrl"
+                                    class="w-full min-h-full border-0 block rounded-lg sm:rounded-xl"
+                                    sandbox="allow-scripts allow-same-origin"
+                                    scrolling="no"></iframe>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+   
+    <!-- 左侧聊天区 -->
+    <div class="@(_isPreviewCollapsed ? "h-full" : "max-h-[50vh]") w-full lg:w-[600px] bg-white/80 backdrop-blur-sm p-3 sm:p-4 lg:p-6 border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col overflow-hidden shadow-lg lg:max-h-full transition-all duration-300">
+        <!-- 用户信息栏 -->
+        @if (_showUserInfo)
+        {
+            <div class="mb-2 sm:mb-3 lg:mb-4 pb-2 sm:pb-3 lg:pb-4 border-b border-gray-200 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 flex-shrink-0 bg-gray-50 rounded-lg sm:rounded-xl p-2 sm:p-3 shadow-sm">
+                <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+                    <div class="w-8 h-8 sm:w-10 sm:h-10 bg-gray-700 rounded-full flex items-center justify-center shadow-md">
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="text-[10px] sm:text-xs text-gray-500 font-medium">当前用户</div>
+                        <div class="text-xs sm:text-sm font-semibold text-gray-800">@_currentUsername</div>
+                    </div>
+                </div>
+                
+                 <!-- CLI 工具选择 -->
+                 <div class="flex-1 relative min-w-0">
+                     <select @bind="_selectedToolId" 
+                             @bind:after="OnToolChanged"
+                             class="w-full px-3 sm:px-4 py-2 sm:py-2.5 pr-8 sm:pr-10 border border-gray-200 rounded-lg sm:rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-500 focus:border-gray-500 text-xs sm:text-sm font-medium bg-white hover:border-gray-400 transition-all shadow-sm hover:shadow-md appearance-none cursor-pointer">
+                         @foreach (var tool in _availableTools)
+                         {
+                             <option value="@tool.Id">@tool.Name - @tool.Description</option>
+                         }
+                     </select>
+                     <div class="absolute inset-y-0 right-0 flex items-center px-2 sm:px-3 pointer-events-none">
+                         <svg class="w-3 h-3 sm:w-4 sm:h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                         </svg>
+                     </div>
+                 </div>
+                
+                <div class="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+                    <button @onclick="OpenEnvConfig" 
+                            class="btn-default text-[10px] sm:text-xs flex items-center gap-1 sm:gap-1.5 shadow-sm hover:shadow-md transition-shadow px-2 sm:px-3 py-1.5 sm:py-2"
+                            title="配置环境变量">
+                        <svg class="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        </svg>
+                        <span class="hidden sm:inline">设置</span>
+                    </button>
+                    <button @onclick="HandleLogout" 
+                            class="btn-default text-[10px] sm:text-xs flex items-center gap-1 sm:gap-1.5 shadow-sm hover:shadow-md transition-shadow px-2 sm:px-3 py-1.5 sm:py-2"
+                            title="退出登录">
+                        <svg class="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                        </svg>
+                        <span class="hidden sm:inline">退出</span>
+                    </button>
+                </div>
+            </div>
+        }
+        <!-- 头部工具栏 -->
+        <div class="flex gap-2 sm:gap-3 mb-3 sm:mb-4 lg:mb-5 flex-shrink-0 flex-wrap">
+            <TemplateLibraryModal @ref="_templateLibraryModal" OnTemplateSelected="OnTemplateSelected" />
+            <button @onclick="ToggleSessionList" 
+                    class="btn-default flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shadow-sm hover:shadow-md transition-all text-xs sm:text-sm px-3 sm:px-4 py-2 min-h-[40px] sm:min-h-[44px]"
+                    title="会话历史">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <span class="hidden sm:inline">会话历史</span>
+            </button>
+            <button @onclick="ToggleContextPanel" 
+                    class="btn-default flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shadow-sm hover:shadow-md transition-all text-xs sm:text-sm px-3 sm:px-4 py-2 min-h-[40px] sm:min-h-[44px]"
+                    title="上下文管理">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                </svg>
+                <span class="hidden sm:inline">上下文</span>
+            </button>
+            <button @onclick="ClearChat" 
+                    class="btn-default flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shadow-sm hover:shadow-md transition-all text-xs sm:text-sm px-3 sm:px-4 py-2 min-h-[40px] sm:min-h-[44px]">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                </svg>
+                <span class="hidden sm:inline">清空</span>
+            </button>
+        </div>
+
+        <!-- 快捷操作面板 -->
+        <QuickActionsPanel @ref="_quickActionsPanel" OnActionSelected="OnQuickActionSelected" />
+
+        <!-- 聊天消息区 -->
+        <div id="chat-messages-container" class="flex-1 overflow-y-auto overflow-x-hidden space-y-2 sm:space-y-3 mb-3 sm:mb-4 lg:mb-5">
+            @foreach (var message in _messages)
+            {
+                <div class="@(message.Role == "user" ? "bg-white border-l-4 border-gray-300 shadow-sm" : "bg-gray-50 border-l-4 border-blue-500 shadow-sm") rounded-lg sm:rounded-xl p-3 sm:p-4 hover:shadow-md transition-all border border-gray-100 overflow-hidden">
+                    <div class="flex justify-between items-center mb-2 sm:mb-3">
+                        <div class="flex items-center gap-1.5 sm:gap-2">
+                            @if (message.Role == "user")
+                            {
+                                <div class="w-7 h-7 sm:w-8 sm:h-8 bg-gradient-to-br from-gray-600 to-gray-700 rounded-full flex items-center justify-center shadow-sm">
+                                    <svg class="w-4 h-4 sm:w-4.5 sm:h-4.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                                    </svg>
+                                </div>
+                                <span class="font-bold text-sm sm:text-base text-gray-700">用户</span>
+                            }
+                            else
+                            {
+                                <div class="w-7 h-7 sm:w-8 sm:h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center shadow-md">
+                                    <svg class="w-4 h-4 sm:w-4.5 sm:h-4.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+                                    </svg>
+                                </div>
+                                <span class="font-bold text-sm sm:text-base text-blue-700">AI 助手</span>
+                            }
+                        </div>
+                        <span class="text-[10px] sm:text-xs text-gray-500 font-medium">@message.CreatedAt.ToString("HH:mm:ss")</span>
+                    </div>
+                    <div class="text-xs sm:text-sm">
+                        @if (message.HasError)
+                        {
+                            <div class="bg-red-50 border-l-4 border-red-500 text-red-700 px-3 sm:px-4 py-2 sm:py-3 rounded-lg shadow-sm" role="alert">
+                                <div class="flex items-start gap-2">
+                                    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                    <span class="block">@message.ErrorMessage</span>
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            @if (IsJsonlContent(message.Content))
+                            {
+                                @* JSONL 格式内容，渲染为卡片 *@
+                                @((MarkupString)RenderJsonlContent(message.Content))
+                            }
+                            else
+                            {
+                                <div class="max-h-60 sm:max-h-96 overflow-y-auto overflow-x-hidden text-gray-700 leading-relaxed break-words">@RenderMarkdown(message.Content)</div>
+                            }
+                        }
+                    </div>
+                </div>
+            }
+
+            @if (_isLoading)
+            {
+                <div class="bg-gray-50 border-l-4 border-blue-500 rounded-lg sm:rounded-xl p-3 sm:p-4 shadow-md animate-pulse overflow-hidden">
+                    <div class="flex justify-between items-center mb-2 sm:mb-3">
+                        <div class="flex items-center gap-2">
+                            <div class="w-7 h-7 sm:w-8 sm:h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center shadow-md">
+                                <svg class="w-4 h-4 sm:w-4.5 sm:h-4.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+                                </svg>
+                            </div>
+                            <span class="font-bold text-sm sm:text-base text-blue-700">AI 助手</span>
+                        </div>
+                        <div class="flex items-center gap-1.5 sm:gap-2">
+                            <span class="text-[10px] sm:text-xs text-blue-600 font-semibold">思考中</span>
+                            <div class="animate-spin h-3 w-3 sm:h-4 sm:w-4 border-2 border-blue-600 rounded-full border-t-transparent"></div>
+                        </div>
+                    </div>
+                    <div class="text-xs sm:text-sm max-h-60 sm:max-h-96 overflow-y-auto overflow-x-hidden text-gray-700 leading-relaxed break-words">@RenderMarkdown(_currentAssistantMessage)</div>
+                </div>
+            }
+        </div>
+
+        <!-- 输入区 -->
+        <div class="border-t-2 border-gray-200 pt-3 sm:pt-4 lg:pt-5 flex-shrink-0 bg-white/50 backdrop-blur-sm rounded-t-lg sm:rounded-t-xl -mx-3 sm:-mx-4 lg:-mx-6 px-3 sm:px-4 lg:px-6 -mb-3 sm:-mb-4 lg:-mb-6 pb-3 sm:pb-4 lg:pb-6">
+            <!-- 文件上传区域 -->
+            <div class="mb-3 flex flex-col gap-2">
+                <label class="text-[10px] sm:text-xs text-gray-600 font-medium px-1">上传文件</label>
+                <div class="flex items-center gap-2">
+                    <select @bind="_selectedUploadFolder"
+                            class="flex-1 px-2 sm:px-3 py-2 sm:py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-gray-500 focus:border-gray-500 text-xs sm:text-sm bg-white shadow-sm hover:border-gray-300 transition-all h-10 sm:h-11">
+                        <option value="">根目录</option>
+                        @foreach (var folder in _availableFolders)
+                        {
+                            <option value="@folder">@folder</option>
+                        }
+                    </select>
+                    <label class="btn-default flex items-center gap-1 sm:gap-1.5 h-10 sm:h-11 px-3 sm:px-4 py-2 sm:py-2.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm hover:shadow-md transition-all flex-shrink-0"
+                           title="上传文件到工作区">
+                        @if (_isUploading)
+                        {
+                            <div class="animate-spin h-3.5 w-3.5 sm:h-4 sm:w-4 border-2 border-gray-600 rounded-full border-t-transparent"></div>
+                        }
+                        else
+                        {
+                            <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                            </svg>
+                        }
+                        <span class="hidden sm:inline">选择文件</span>
+                        <InputFile OnChange="HandleFileUpload" 
+                                   disabled="@_isUploading"
+                                   class="hidden" />
+                    </label>
+                </div>
+            </div>
+            
+            <!-- 消息输入区域 -->
+            <div class="flex items-end gap-2 sm:gap-3 relative">
+                <div class="flex-1 relative">
+                    <textarea @bind="_inputMessage"
+                              @bind:event="oninput"
+                              @bind:after="HandleInput"
+                              @onkeydown="HandleKeyDown"
+                              @onkeydown:preventDefault="@(_isKeyDownEnterWithoutShift)"
+                              id="input-message"
+                              placeholder="输入您的编程问题或需求..."
+                              rows="3"
+                              maxlength="5000"
+                              disabled="@_isLoading"
+                              class="w-full px-3 sm:px-4 py-2 sm:py-3 border border-gray-200 rounded-lg sm:rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 resize-none disabled:bg-gray-100 disabled:cursor-not-allowed text-xs sm:text-sm bg-white shadow-sm hover:border-gray-300 transition-all overflow-x-hidden"></textarea>
+                    
+                    <!-- 自动补全下拉 -->
+                    <AutoCompleteDropdown @ref="_autoCompleteDropdown" OnSuggestionSelected="OnSuggestionSelected" TargetElementId="input-message" />
+                    
+                    <!-- 技能选择器 -->
+                    @if (_showSkillPicker)
+                    {
+                        <div class="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl shadow-2xl border border-gray-200 z-50 max-h-80 overflow-hidden">
+                             <div class="px-3 py-2 border-b border-gray-200 bg-gray-50">
+                                 <div class="flex items-center gap-2">
+                                     <svg class="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+                                     </svg>
+                                     <span class="text-sm font-semibold text-gray-800">选择技能</span>
+                                     <span class="text-xs px-2 py-0.5 rounded-full @GetCurrentToolBadgeClass()">@GetCurrentToolName()</span>
+                                     <span class="text-xs text-gray-500 ml-auto">@GetFilteredSkills().Count / @_skills.Count</span>
+                                     @if (!string.IsNullOrEmpty(_skillFilter))
+                                     {
+                                         <span class="text-xs text-blue-600 font-medium">筛选: @_skillFilter</span>
+                                     }
+                                 </div>
+                             </div>
+                            <div class="overflow-y-auto max-h-60 pb-2">
+                                @if (GetFilteredSkills().Any())
+                                {
+                                    @foreach (var skill in GetFilteredSkills())
+                                    {
+                                        <div @onclick="() => SelectSkill(skill)"
+                                             title="@skill.Description"
+                                             class="px-3 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0 transition-colors">
+                                            <div class="flex items-start gap-2">
+                                                <div class="flex-shrink-0 mt-0.5">
+                                                    <svg class="w-4 h-4 @GetSkillIconColor(skill.Source)" fill="currentColor" viewBox="0 0 20 20">
+                                                        <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"></path>
+                                                    </svg>
+                                                </div>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-sm font-medium text-gray-800">@skill.Name</span>
+                                                        <span class="text-[10px] px-1.5 py-0.5 rounded-full @GetSkillBadgeClass(skill.Source)">@skill.Source</span>
+                                                    </div>
+                                                    <p class="text-xs text-gray-500 mt-1 truncate">@skill.Description</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="p-4 text-center text-gray-500 text-sm">
+                                        <svg class="w-10 h-10 mx-auto mb-2 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                        </svg>
+                                        <p>没有找到匹配的技能</p>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+                <div class="flex flex-col items-end gap-1.5 sm:gap-2 flex-shrink-0">
+                    <span class="text-[10px] sm:text-xs text-gray-500 font-medium whitespace-nowrap">@(_inputMessage?.Length ?? 0) / 5000</span>
+                    <button @onclick="SendMessage"
+                            disabled="@_isLoading"
+                            class="btn-primary flex items-center gap-1.5 sm:gap-2 shadow-md hover:shadow-lg transition-all h-10 sm:h-11 px-3 sm:px-4 text-xs sm:text-sm">
+                        @if (_isLoading)
+                        {
+                            <div class="animate-spin h-3.5 w-3.5 sm:h-4 sm:w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        }
+                        else
+                        {
+                            <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                            </svg>
+                        }
+                        发送
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+  
+</div>
+
+<!-- 环境变量配置模态框 -->
+<EnvironmentVariableConfigModal @ref="_envConfigModal" />
+
+<!-- 代码预览模态框 -->
+@* 代码预览模态框 (已应用Tailwind样式) *@
+<CodePreviewModal @ref="_codePreviewModal" />
+
+<!-- 上下文预览面板 -->
+<ContextPreviewPanel @ref="_contextPreviewPanel" SessionId="@_sessionId" OnContextChanged="OnContextChanged" />
+
+<!-- 创建文件夹对话框 -->
+@if (_showCreateFolderDialog)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseCreateFolderDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+                    </svg>
+                    新建文件夹
+                </h3>
+                <button @onclick="CloseCreateFolderDialog" 
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_createFolderError))
+            {
+                <div class="mb-4 bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span class="block text-sm">@_createFolderError</span>
+                    </div>
+                </div>
+            }
+
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">文件夹名称</label>
+                <input @bind="_newFolderName"
+                       @bind:event="oninput"
+                       @onkeydown="HandleCreateFolderKeyDown"
+                       type="text"
+                       placeholder="例如: src, images, documents"
+                       class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-gray-500 text-sm bg-white shadow-sm"
+                       autofocus />
+                <p class="mt-2 text-xs text-gray-500">
+                    支持多级目录，使用 / 分隔，例如: src/components
+                </p>
+            </div>
+
+            <div class="flex gap-3">
+                <button @onclick="CloseCreateFolderDialog"
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                    取消
+                </button>
+                <button @onclick="CreateFolder"
+                        disabled="@(string.IsNullOrWhiteSpace(_newFolderName) || _isCreatingFolder)"
+                        class="flex-1 px-4 py-3 bg-gray-800 hover:bg-black text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                    @if (_isCreatingFolder)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        <span>创建中...</span>
+                    }
+                    else
+                    {
+                        <span>创建</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- 删除确认对话框 -->
+@if (_showDeleteConfirmDialog && _nodeToDelete != null)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseDeleteConfirmDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    确认删除
+                </h3>
+                <button @onclick="CloseDeleteConfirmDialog" 
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_deleteError))
+            {
+                <div class="mb-4 bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span class="block text-sm">@_deleteError</span>
+                    </div>
+                </div>
+            }
+
+            <div class="mb-6">
+                <p class="text-gray-700 text-sm mb-4">
+                    您确定要删除以下@(_nodeToDelete.Type == "folder" ? "文件夹" : "文件")吗？
+                </p>
+                <div class="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3">
+                    <div class="flex items-center gap-2">
+                        @if (_nodeToDelete.Type == "folder")
+                        {
+                            <svg class="w-5 h-5 text-yellow-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"></path>
+                            </svg>
+                        }
+                        else
+                        {
+                            <svg class="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                            </svg>
+                        }
+                        <span class="font-mono text-sm text-gray-800 break-all">@_nodeToDelete.Path</span>
+                    </div>
+                </div>
+                @if (_nodeToDelete.Type == "folder")
+                {
+                    <p class="mt-3 text-xs text-red-600 font-medium">
+                        ⚠️ 警告：此操作将删除文件夹及其所有内容，且无法恢复！
+                    </p>
+                }
+                else
+                {
+                    <p class="mt-3 text-xs text-gray-500">
+                        此操作无法恢复，请谨慎操作。
+                    </p>
+                }
+            </div>
+
+            <div class="flex gap-3">
+                <button @onclick="CloseDeleteConfirmDialog"
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                    取消
+                </button>
+                <button @onclick="DeleteWorkspaceItem"
+                        disabled="@_isDeleting"
+                        class="flex-1 px-4 py-3 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl font-medium hover:from-red-600 hover:to-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                    @if (_isDeleting)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        <span>删除中...</span>
+                    }
+                    else
+                    {
+                        <span>确认删除</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private RenderFragment RenderFileNode(WorkspaceFileNode node, int depth) => __builder =>
+    {
+        var paddingLeft = depth * 12; // 减小移动端缩进
+        var nodeKey = NormalizePath(node.Path); // 使用完整路径作为唯一标识
+        
+        <div @key="@nodeKey" style="padding-left: @(paddingLeft)px" class="py-0.5">
+            @if (node.Type == "folder")
+            {
+                var normalizedPath = nodeKey;
+                var isExpanded = _expandedFolders.Contains(normalizedPath);
+                <div class="group flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-semibold hover:bg-gray-100 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2 transition-colors active:bg-gray-200">
+                    <div class="flex items-center gap-1.5 sm:gap-2 flex-1 cursor-pointer min-w-0"
+                         @onclick="() => ToggleFolder(node)">
+                        <!-- 展开/折叠箭头 -->
+                        <svg class="@(isExpanded ? "rotate-90" : "") w-3 h-3 text-gray-500 flex-shrink-0 transition-transform" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                        </svg>
+                        <!-- 文件夹图标 -->
+                        <svg class="w-4 h-4 sm:w-5 sm:h-5 text-yellow-500 group-hover:text-yellow-600 flex-shrink-0 transition-colors" fill="currentColor" viewBox="0 0 20 20">
+                            @if (isExpanded)
+                            {
+                                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"></path>
+                            }
+                            else
+                            {
+                                <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1H8a2 2 0 00-2 2v5a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd"></path>
+                            }
+                        </svg>
+                        <span class="group-hover:text-gray-800 transition-colors truncate">@node.Name</span>
+                    </div>
+                    <div class="flex sm:hidden items-center gap-0.5 flex-shrink-0">
+                        <button @onclick="() => ShowDeleteConfirmDialog(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-red-100 active:bg-red-200 rounded-lg transition-colors"
+                                title="删除文件夹">
+                            <svg class="w-3.5 h-3.5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="hidden sm:group-hover:flex items-center gap-1 flex-shrink-0">
+                        <button @onclick="() => ShowDeleteConfirmDialog(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
+                                title="删除文件夹">
+                            <svg class="w-3.5 h-3.5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                @if (node.Children != null && isExpanded)
+                {
+                    foreach (var child in node.Children)
+                    {
+                        @RenderFileNode(child, depth + 1)
+                    }
+                }
+            }
+            else
+            {
+                var fileIcon = GetFileIcon(node.Extension);
+                <div class="group flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm hover:bg-gradient-to-r hover:bg-gray-50 rounded-lg px-2 sm:px-3 py-1.5 sm:py-2 transition-all active:bg-gray-200">
+                    <input type="checkbox" 
+                           checked="@_selectedFiles.Contains(node.Path)" 
+                           @onchange="() => ToggleFileSelection(node.Path)"
+                           @onclick:stopPropagation="true"
+                           class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0" />
+                    @((MarkupString)fileIcon)
+                    <span class="flex-1 cursor-pointer group-hover:text-gray-800 group-hover:font-medium transition-all truncate min-w-0" @onclick="() => OnFileNodeClick(node)">@node.Name</span>
+                    @if (node.IsHtml)
+                    {
+                        <span class="px-1.5 sm:px-2.5 py-0.5 bg-gradient-to-r from-green-100 to-green-200 text-green-800 text-[10px] sm:text-xs rounded-full font-semibold shadow-sm flex-shrink-0">HTML</span>
+                    }
+                    <div class="flex sm:hidden items-center gap-0.5 flex-shrink-0">
+                        <button @onclick="async () => await PreviewFile(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition-colors"
+                                title="预览代码">
+                            <svg class="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                            </svg>
+                        </button>
+                        <button @onclick="() => DownloadFile(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition-colors"
+                                title="下载文件">
+                            <svg class="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                        </button>
+                        <button @onclick="() => ShowDeleteConfirmDialog(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-red-100 active:bg-red-200 rounded-lg transition-colors"
+                                title="删除文件">
+                            <svg class="w-3.5 h-3.5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="hidden sm:group-hover:flex items-center gap-1 flex-shrink-0">
+                        <button @onclick="async () => await PreviewFile(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
+                                title="预览代码">
+                            <svg class="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                            </svg>
+                        </button>
+                        <button @onclick="() => DownloadFile(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
+                                title="下载文件">
+                            <svg class="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                        </button>
+                        <button @onclick="() => ShowDeleteConfirmDialog(node)"
+                                @onclick:stopPropagation="true"
+                                class="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
+                                title="删除文件">
+                            <svg class="w-3.5 h-3.5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    };
+
+    private string GetTabClass(string tabKey)
+    {
+        return _activeTabKey == tabKey
+            ? "border-blue-500 text-blue-700 bg-blue-50/50 shadow-sm"
+            : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 hover:bg-gray-50";
+    }
+
+    private string GetFileIcon(string extension)
+    {
+        return extension.ToLower() switch
+        {
+            // HTML/Web
+            ".html" or ".htm" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-orange-500 group-hover:text-orange-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path d=\"M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z\"></path></svg>",
+            
+            // CSS
+            ".css" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-500 group-hover:text-blue-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // JavaScript
+            ".js" or ".jsx" or ".mjs" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-yellow-500 group-hover:text-yellow-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // TypeScript
+            ".ts" or ".tsx" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600 group-hover:text-blue-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // C#
+            ".cs" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-purple-600 group-hover:text-purple-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Razor
+            ".razor" or ".cshtml" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600 group-hover:text-indigo-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path d=\"M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z\"></path></svg>",
+            
+            // Python
+            ".py" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400 group-hover:text-blue-500 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Java
+            ".java" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-600 group-hover:text-red-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // JSON
+            ".json" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-500 group-hover:text-amber-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 11-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 010-2h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12zm-9 7a1 1 0 012 0v1.586l2.293-2.293a1 1 0 111.414 1.414L6.414 15H8a1 1 0 010 2H4a1 1 0 01-1-1v-4zm13-1a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 010-2h1.586l-2.293-2.293a1 1 0 111.414-1.414L15 13.586V12a1 1 0 011-1z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // XML
+            ".xml" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-600 group-hover:text-green-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Markdown
+            ".md" or ".markdown" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-600 group-hover:text-gray-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Images
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".svg" or ".webp" or ".ico" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-pink-500 group-hover:text-pink-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // PDF
+            ".pdf" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-500 group-hover:text-red-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Text
+            ".txt" or ".log" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-500 group-hover:text-gray-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Config files
+            ".config" or ".ini" or ".env" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-teal-500 group-hover:text-teal-600 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path fill-rule=\"evenodd\" d=\"M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z\" clip-rule=\"evenodd\"></path></svg>",
+            
+            // Archive
+            ".zip" or ".rar" or ".7z" or ".tar" or ".gz" => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-yellow-600 group-hover:text-yellow-700 flex-shrink-0 transition-colors\" fill=\"currentColor\" viewBox=\"0 0 20 20\"><path d=\"M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z\"></path></svg>",
+            
+            // Default file icon
+            _ => "<svg class=\"w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 group-hover:text-gray-600 flex-shrink-0 transition-colors\" fill=\"none\" stroke=\"currentColor\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z\"></path></svg>"
+        };
+    }
+}
+
+
+
+<!-- 会话删除确认对话框 -->
+@if (_showSessionDeleteDialog && _sessionToDelete != null)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseSessionDeleteDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    确认删除会话
+                </h3>
+                <button @onclick="CloseSessionDeleteDialog" 
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_sessionDeleteError))
+            {
+                <div class="mb-4 bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span class="block text-sm">@_sessionDeleteError</span>
+                    </div>
+                </div>
+            }
+
+            <div class="mb-6">
+                <p class="text-gray-700 text-sm mb-4">
+                    您确定要删除以下会话吗？
+                </p>
+                <div class="bg-gradient-to-r bg-gray-50 border-2 border-gray-300 rounded-xl px-4 py-4 shadow-sm">
+                    <div class="flex items-start gap-3">
+                        <div class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center flex-shrink-0 shadow-md">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
+                            </svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h4 class="font-bold text-gray-800 text-base mb-1 break-words">@_sessionToDelete.Title</h4>
+                            <div class="space-y-1 text-xs text-gray-600">
+                                <div class="flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
+                                    </svg>
+                                    <span>消息数量: @_sessionToDelete.Messages.Count 条</span>
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                    <span>创建时间: @_sessionToDelete.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                    </svg>
+                                    <span>最后更新: @FormatDateTime(_sessionToDelete.UpdatedAt)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                @if (_currentSession?.SessionId == _sessionToDelete.SessionId)
+                {
+                    <div class="mt-4 bg-amber-50 border-l-4 border-amber-500 px-4 py-3 rounded-lg">
+                        <div class="flex items-start gap-2">
+                            <svg class="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                            </svg>
+                            <div class="text-xs text-amber-800">
+                                <p class="font-semibold mb-1">这是当前激活的会话</p>
+                                <p>删除后将自动创建一个新的空白会话。</p>
+                            </div>
+                        </div>
+                    </div>
+                }
+                
+                <p class="mt-4 text-xs text-red-600 font-medium flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                    </svg>
+                    警告：此操作将永久删除会话及其所有消息，且无法恢复！
+                </p>
+            </div>
+
+            <div class="flex gap-3">
+                <button @onclick="CloseSessionDeleteDialog"
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                    取消
+                </button>
+                <button @onclick="DeleteSession"
+                        disabled="@_isDeletingSession"
+                        class="flex-1 px-4 py-3 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl font-medium hover:from-red-600 hover:to-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                    @if (_isDeletingSession)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        <span>删除中...</span>
+                    }
+                    else
+                    {
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                        </svg>
+                        <span>确认删除</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- 会话重命名对话框 -->
+@if (_showRenameDialog && _sessionToRename != null)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseRenameDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                    </svg>
+                    重命名会话
+                </h3>
+                <button @onclick="CloseRenameDialog" 
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_renameError))
+            {
+                <div class="mb-4 bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span class="block text-sm">@_renameError</span>
+                    </div>
+                </div>
+            }
+
+            <div class="mb-6">
+                <label class="block text-sm font-semibold text-gray-700 mb-2">
+                    会话标题
+                </label>
+                <input type="text" 
+                       @bind="_newSessionTitle" 
+                       @bind:event="oninput"
+                       @onkeydown="HandleRenameKeyDown"
+                       maxlength="100"
+                       placeholder="请输入会话标题（最多100个字符）"
+                       class="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:border-gray-600 focus:ring-2 focus:ring-gray-300 transition-all outline-none text-sm"
+                       disabled="@_isRenamingSession" />
+                <div class="mt-2 flex items-center justify-between text-xs text-gray-500">
+                    <span>按 Enter 保存，Esc 取消</span>
+                    <span>@(_newSessionTitle?.Length ?? 0) / 100</span>
+                </div>
+            </div>
+
+            <div class="flex gap-3">
+                <button @onclick="CloseRenameDialog"
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                    取消
+                </button>
+                <button @onclick="RenameSession"
+                        disabled="@(_isRenamingSession || string.IsNullOrWhiteSpace(_newSessionTitle))"
+                        class="flex-1 px-4 py-3 bg-gray-800 hover:bg-black text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                    @if (_isRenamingSession)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        <span>保存中...</span>
+                    }
+                    else
+                    {
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        <span>保存</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+
+<!-- 会话重命名对话框 -->
+@if (_showRenameDialog && _sessionToRename != null)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseRenameDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                    </svg>
+                    重命名会话
+                </h3>
+                <button @onclick="CloseRenameDialog" 
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_renameError))
+            {
+                <div class="mb-4 bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span class="block text-sm">@_renameError</span>
+                    </div>
+                </div>
+            }
+
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">会话标题</label>
+                <input @bind="_newSessionTitle"
+                       @bind:event="oninput"
+                       @onkeydown="HandleRenameKeyDown"
+                       type="text"
+                       placeholder="输入新的会话标题"
+                       maxlength="100"
+                       class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-gray-500 text-sm bg-white shadow-sm"
+                       autofocus />
+                <p class="mt-2 text-xs text-gray-500">
+                    @(_newSessionTitle?.Length ?? 0) / 100 字符
+                </p>
+            </div>
+
+            <div class="flex gap-3">
+                <button @onclick="CloseRenameDialog"
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                    取消
+                </button>
+                <button @onclick="RenameSession"
+                        disabled="@(string.IsNullOrWhiteSpace(_newSessionTitle) || _isRenamingSession)"
+                        class="flex-1 px-4 py-3 bg-gray-800 hover:bg-black text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                    @if (_isRenamingSession)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        <span>保存中...</span>
+                    }
+                    else
+                    {
+                        <span>保存</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- 批量操作对话框 -->
+<BatchOperationDialog Show="@_showBatchOperationDialog"
+                      Operation="@_batchOperation"
+                      SelectedFiles="@_selectedFiles"
+                      TargetFolder="@_batchTargetFolder"
+                      IsOperating="@_isBatchOperating"
+                      ErrorMessage="@_batchOperationError"
+                      OnClose="CloseBatchOperationDialog"
+                      OnConfirm="ExecuteBatchOperation" />
+
+<!-- 模板变量输入对话框 -->
+@if (_showVariableInputDialog && _templateWithVariables != null)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseVariableInputDialog">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden transform transition-all" @onclick:stopPropagation="true">
+            <!-- 头部 -->
+            <div class="flex items-center justify-between p-6 border-b-2 border-gray-200 bg-gradient-to-r from-purple-50 to-white">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <span class="text-2xl">@_templateWithVariables.Icon</span>
+                    <span>填写模板变量</span>
+                </h3>
+                <button @onclick="CloseVariableInputDialog" class="p-2 hover:bg-gray-200 rounded-lg transition-colors">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- 模板信息 -->
+            <div class="px-6 pt-4 pb-2 bg-gray-50 border-b border-gray-200">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="text-sm font-semibold text-gray-700">模板：</span>
+                    <span class="text-sm text-gray-800">@_templateWithVariables.Title</span>
+                </div>
+                <div class="text-xs text-gray-500 bg-white rounded-lg p-3 border border-gray-200 max-h-24 overflow-y-auto">
+                    <pre class="whitespace-pre-wrap font-mono">@_templateWithVariables.Content</pre>
+                </div>
+            </div>
+
+            <!-- 变量输入区域 -->
+            <div class="p-6 overflow-y-auto space-y-4" style="max-height: calc(90vh - 300px);">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"></path>
+                    </svg>
+                    <span class="text-sm font-semibold text-gray-700">请填写以下 @_templateWithVariables.Variables.Count 个变量：</span>
+                </div>
+
+                @foreach (var variable in _templateWithVariables.Variables)
+                {
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
+                            <span class="w-6 h-6 bg-purple-100 text-purple-700 rounded-full flex items-center justify-center text-xs font-bold">
+                                @(_templateWithVariables.Variables.IndexOf(variable) + 1)
+                            </span>
+                            <code class="bg-purple-50 text-purple-700 px-2 py-0.5 rounded font-mono text-xs">{{@variable}}</code>
+                        </label>
+                        <textarea @bind="_variableValues[variable]"
+                                  @bind:event="oninput"
+                                  rows="3"
+                                  placeholder="@($"请输入 {variable} 的值...")"
+                                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-sm resize-none bg-white"></textarea>
+                    </div>
+                }
+            </div>
+
+            <!-- 底部按钮 -->
+            <div class="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
+                <button @onclick="CloseVariableInputDialog" class="btn-default px-6 py-2.5">
+                    取消
+                </button>
+                <button @onclick="ApplyTemplateWithVariables" 
+                        disabled="@(_variableValues.Any(v => string.IsNullOrWhiteSpace(v.Value)))"
+                        class="btn-primary px-6 py-2.5 flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                    应用模板
+                </button>
+            </div>
+        </div>
+    </div>
+}

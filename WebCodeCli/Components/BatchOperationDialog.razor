@@ -1,0 +1,123 @@
+@* 批量操作对话框组件 *@
+@if (Show)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="OnClose">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all" @onclick:stopPropagation="true">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                    </svg>
+                    @GetOperationTitle()
+                </h3>
+                <button @onclick="OnClose" 
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(ErrorMessage))
+            {
+                <div class="mb-4 bg-red-50 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg" role="alert">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <span class="block text-sm">@ErrorMessage</span>
+                    </div>
+                </div>
+            }
+
+            <div class="mb-6">
+                <p class="text-gray-700 text-sm mb-4">
+                    您确定要对以下 <span class="font-bold">@SelectedFiles.Count</span> 个文件执行 @GetOperationTitle() 操作吗？
+                </p>
+                
+                @if (Operation == "move" || Operation == "copy")
+                {
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">目标文件夹</label>
+                        <input @bind="TargetFolder"
+                               @bind:event="oninput"
+                               type="text"
+                               placeholder="例如: folder/subfolder"
+                               class="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-gray-500 text-sm bg-white shadow-sm" />
+                        <p class="mt-2 text-xs text-gray-500">
+                            输入相对于工作区根目录的路径
+                        </p>
+                    </div>
+                }
+                
+                <div class="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 max-h-40 overflow-y-auto">
+                    <div class="space-y-1">
+                        @foreach (var file in SelectedFiles.Take(10))
+                        {
+                            <div class="flex items-center gap-2 text-xs">
+                                <svg class="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                                </svg>
+                                <span class="font-mono text-gray-800 truncate">@file</span>
+                            </div>
+                        }
+                        @if (SelectedFiles.Count > 10)
+                        {
+                            <p class="text-xs text-gray-500 mt-2">还有 @(SelectedFiles.Count - 10) 个文件...</p>
+                        }
+                    </div>
+                </div>
+                
+                @if (Operation == "delete")
+                {
+                    <p class="mt-3 text-xs text-red-600 font-medium">
+                        ⚠️ 警告：此操作无法恢复，请谨慎操作！
+                    </p>
+                }
+            </div>
+
+            <div class="flex gap-3">
+                <button @onclick="OnClose"
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                    取消
+                </button>
+                <button @onclick="OnConfirm"
+                        disabled="@IsOperating"
+                        class="flex-1 px-4 py-3 @(Operation == "delete" ? "bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700" : "bg-gray-800 hover:bg-black") text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                    @if (IsOperating)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                        <span>处理中...</span>
+                    }
+                    else
+                    {
+                        <span>确认</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Show { get; set; }
+    [Parameter] public string Operation { get; set; } = string.Empty;
+    [Parameter] public HashSet<string> SelectedFiles { get; set; } = new();
+    [Parameter] public string TargetFolder { get; set; } = string.Empty;
+    [Parameter] public bool IsOperating { get; set; }
+    [Parameter] public string ErrorMessage { get; set; } = string.Empty;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+
+    private string GetOperationTitle()
+    {
+        return Operation switch
+        {
+            "delete" => "批量删除",
+            "move" => "批量移动",
+            "copy" => "批量复制",
+            _ => "批量操作"
+        };
+    }
+}
+

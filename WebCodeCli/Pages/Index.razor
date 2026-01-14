@@ -1,0 +1,33 @@
+﻿@namespace WebCodeCli.Pages
+@page "/"
+@using WebCodeCli.Domain.Domain.Service
+
+@inject NavigationManager NavigationManager
+@inject IAuthenticationService AuthenticationService
+@inject IJSRuntime JSRuntime
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        // 如果启用了认证，检查是否已登录
+        if (AuthenticationService.IsAuthenticationEnabled())
+        {
+            try
+            {
+                var isAuthenticated = await JSRuntime.InvokeAsync<string>("sessionStorage.getItem", "isAuthenticated");
+                if (isAuthenticated != "true")
+                {
+                    NavigationManager.NavigateTo("/login");
+                    return;
+                }
+            }
+            catch
+            {
+                NavigationManager.NavigateTo("/login");
+                return;
+            }
+        }
+
+        NavigationManager.NavigateTo("/code-assistant");
+    }
+}

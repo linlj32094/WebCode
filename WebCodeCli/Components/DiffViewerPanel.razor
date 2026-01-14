@@ -1,0 +1,340 @@
+@using WebCodeCli.Domain.Domain.Model
+@using WebCodeCli.Domain.Domain.Service
+@inject IGitService GitService
+@inject ICliExecutorService CliExecutorService
+
+<div class="h-full flex flex-col bg-white">
+    <!-- 头部：文件和版本选择 -->
+    <div class="p-3 sm:p-4 border-b border-gray-200 flex-shrink-0 space-y-3">
+        <!-- 文件路径输入 -->
+        <div class="flex items-center gap-2">
+            <label class="text-sm font-semibold text-gray-700 whitespace-nowrap">文件路径:</label>
+            <input type="text" 
+                   @bind="_selectedFilePath" 
+                   @bind:event="oninput"
+                   placeholder="输入文件路径（相对于工作区）"
+                   class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500" />
+        </div>
+        
+        <!-- 版本选择 -->
+        <div class="flex items-center gap-2">
+            <label class="text-sm font-semibold text-gray-700 whitespace-nowrap">对比版本:</label>
+            <input type="text" 
+                   @bind="_fromCommit" 
+                   @bind:event="oninput"
+                   placeholder="原始版本 (commit hash)"
+                   class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500" />
+            <span class="text-gray-400">→</span>
+            <input type="text" 
+                   @bind="_toCommit" 
+                   @bind:event="oninput"
+                   placeholder="目标版本 (commit hash 或 HEAD)"
+                   class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500" />
+        </div>
+        
+        <!-- 操作按钮 -->
+        <div class="flex items-center gap-2">
+            <button @onclick="LoadDiff" 
+                    disabled="@_isLoading"
+                    class="btn-primary px-4 py-2 text-sm flex items-center gap-2 disabled:opacity-50">
+                @if (_isLoading)
+                {
+                    <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                }
+                else
+                {
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                    </svg>
+                }
+                对比
+            </button>
+            
+            <button @onclick="ToggleViewMode" 
+                    class="btn-default px-4 py-2 text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                </svg>
+                @(_splitView ? "统一视图" : "分割视图")
+            </button>
+            
+            @if (_diffResult != null)
+            {
+                <div class="ml-auto flex items-center gap-4 text-sm">
+                    <span class="text-green-600 flex items-center gap-1">
+                        <span class="font-semibold">+@_diffResult.AddedLines</span>
+                        <span class="text-gray-500">行</span>
+                    </span>
+                    <span class="text-red-600 flex items-center gap-1">
+                        <span class="font-semibold">-@_diffResult.DeletedLines</span>
+                        <span class="text-gray-500">行</span>
+                    </span>
+                </div>
+            }
+        </div>
+    </div>
+
+    <!-- 内容区域 -->
+    <div class="flex-1 overflow-auto p-4">
+        @if (!_isGitRepo)
+        {
+            <!-- 非 Git 仓库提示 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">当前工作区不是 Git 仓库</p>
+                <p class="text-sm mt-2 text-gray-500">文件对比功能需要 Git 支持</p>
+            </div>
+        }
+        else if (_diffResult == null && !_isLoading)
+        {
+            <!-- 未加载差异提示 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">请输入文件路径和版本信息</p>
+                <p class="text-sm mt-2 text-gray-500">填写上方表单并点击对比按钮</p>
+            </div>
+        }
+        else if (_diffResult != null)
+        {
+            @if (_splitView)
+            {
+                <!-- 分割视图 -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <!-- 左侧：原始版本 -->
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="bg-red-50 px-4 py-2 border-b border-red-200 flex items-center gap-2">
+                            <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+                            </svg>
+                            <span class="font-semibold text-red-700">原始版本 (@_fromCommit)</span>
+                        </div>
+                        <div class="bg-white overflow-x-auto">
+                            <table class="w-full text-sm font-mono">
+                                @foreach (var line in _diffResult.DiffLines.Where(l => l.Type != DiffLineType.Added))
+                                {
+                                    <tr class="@GetLineClass(line)">
+                                        <td class="px-2 py-1 text-gray-400 text-right select-none border-r border-gray-200 w-12">
+                                            @line.OldLineNumber
+                                        </td>
+                                        <td class="px-4 py-1 whitespace-pre">@line.Content</td>
+                                    </tr>
+                                }
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- 右侧：新版本 -->
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="bg-green-50 px-4 py-2 border-b border-green-200 flex items-center gap-2">
+                            <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            <span class="font-semibold text-green-700">新版本 (@_toCommit)</span>
+                        </div>
+                        <div class="bg-white overflow-x-auto">
+                            <table class="w-full text-sm font-mono">
+                                @foreach (var line in _diffResult.DiffLines.Where(l => l.Type != DiffLineType.Deleted))
+                                {
+                                    <tr class="@GetLineClass(line)">
+                                        <td class="px-2 py-1 text-gray-400 text-right select-none border-r border-gray-200 w-12">
+                                            @line.NewLineNumber
+                                        </td>
+                                        <td class="px-4 py-1 whitespace-pre">@line.Content</td>
+                                    </tr>
+                                }
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <!-- 统一视图 -->
+                <div class="border border-gray-200 rounded-lg overflow-hidden">
+                    <div class="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                        <span class="font-semibold text-gray-700">文件对比</span>
+                        <span class="text-sm text-gray-500 ml-2">(@_fromCommit → @_toCommit)</span>
+                    </div>
+                    <div class="bg-white overflow-x-auto">
+                        <table class="w-full text-sm font-mono">
+                            @foreach (var line in _diffResult.DiffLines)
+                            {
+                                <tr class="@GetLineClass(line)">
+                                    <td class="px-2 py-1 text-gray-400 text-right select-none border-r border-gray-200 w-12">
+                                        @line.OldLineNumber
+                                    </td>
+                                    <td class="px-2 py-1 text-gray-400 text-right select-none border-r border-gray-200 w-12">
+                                        @line.NewLineNumber
+                                    </td>
+                                    <td class="px-1 py-1 text-center select-none border-r border-gray-200 w-8">
+                                        @GetLineSymbol(line.Type)
+                                    </td>
+                                    <td class="px-4 py-1 whitespace-pre">@line.Content</td>
+                                </tr>
+                            }
+                        </table>
+                    </div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public string SessionId { get; set; } = string.Empty;
+
+    [Parameter]
+    public string InitialFilePath { get; set; } = string.Empty;
+
+    [Parameter]
+    public string InitialFromCommit { get; set; } = string.Empty;
+
+    [Parameter]
+    public string InitialToCommit { get; set; } = "HEAD";
+
+    private string _selectedFilePath = string.Empty;
+    private string _fromCommit = string.Empty;
+    private string _toCommit = "HEAD";
+    private GitDiffResult? _diffResult = null;
+    private bool _isLoading = false;
+    private bool _isGitRepo = false;
+    private bool _splitView = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CheckGitRepository();
+        
+        // 初始化参数
+        if (!string.IsNullOrEmpty(InitialFilePath))
+        {
+            _selectedFilePath = InitialFilePath;
+        }
+        if (!string.IsNullOrEmpty(InitialFromCommit))
+        {
+            _fromCommit = InitialFromCommit;
+        }
+        if (!string.IsNullOrEmpty(InitialToCommit))
+        {
+            _toCommit = InitialToCommit;
+        }
+        
+        // 如果所有参数都有，自动加载对比
+        if (!string.IsNullOrEmpty(_selectedFilePath) && 
+            !string.IsNullOrEmpty(_fromCommit) && 
+            !string.IsNullOrEmpty(_toCommit))
+        {
+            await LoadDiff();
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        bool shouldReload = false;
+        
+        // 检查参数是否变化
+        if (!string.IsNullOrEmpty(InitialFilePath) && InitialFilePath != _selectedFilePath)
+        {
+            _selectedFilePath = InitialFilePath;
+            shouldReload = true;
+        }
+        if (!string.IsNullOrEmpty(InitialFromCommit) && InitialFromCommit != _fromCommit)
+        {
+            _fromCommit = InitialFromCommit;
+            shouldReload = true;
+        }
+        if (!string.IsNullOrEmpty(InitialToCommit) && InitialToCommit != _toCommit)
+        {
+            _toCommit = InitialToCommit;
+            shouldReload = true;
+        }
+        
+        // 如果参数变化且所有必要参数都有，重新加载
+        if (shouldReload && 
+            !string.IsNullOrEmpty(_selectedFilePath) && 
+            !string.IsNullOrEmpty(_fromCommit) && 
+            !string.IsNullOrEmpty(_toCommit))
+        {
+            await LoadDiff();
+        }
+    }
+
+    private async Task CheckGitRepository()
+    {
+        try
+        {
+            var workspacePath = CliExecutorService.GetSessionWorkspacePath(SessionId);
+            _isGitRepo = await Task.Run(() => GitService.IsGitRepository(workspacePath));
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"检查 Git 仓库失败: {ex.Message}");
+        }
+    }
+
+    private async Task LoadDiff()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedFilePath) || 
+            string.IsNullOrWhiteSpace(_fromCommit) || 
+            string.IsNullOrWhiteSpace(_toCommit))
+        {
+            return;
+        }
+
+        _isLoading = true;
+        _diffResult = null;
+        StateHasChanged();
+
+        try
+        {
+            var workspacePath = CliExecutorService.GetSessionWorkspacePath(SessionId);
+            _diffResult = await GitService.GetFileDiffAsync(workspacePath, _selectedFilePath, _fromCommit, _toCommit);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载文件差异失败: {ex.Message}");
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleViewMode()
+    {
+        _splitView = !_splitView;
+        StateHasChanged();
+    }
+
+    private string GetLineClass(DiffLine line)
+    {
+        return line.Type switch
+        {
+            DiffLineType.Added => "bg-green-50 hover:bg-green-100",
+            DiffLineType.Deleted => "bg-red-50 hover:bg-red-100",
+            DiffLineType.Modified => "bg-yellow-50 hover:bg-yellow-100",
+            _ => "hover:bg-gray-50"
+        };
+    }
+
+    private string GetLineSymbol(DiffLineType type)
+    {
+        return type switch
+        {
+            DiffLineType.Added => "+",
+            DiffLineType.Deleted => "-",
+            DiffLineType.Modified => "~",
+            _ => " "
+        };
+    }
+}

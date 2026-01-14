@@ -1,0 +1,148 @@
+@namespace WebCodeCli.Components
+
+<!-- 依赖安装进度对话框 -->
+@if (Show)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden transform transition-all">
+            <!-- 头部 -->
+            <div class="flex items-center justify-between p-6 border-b-2 border-gray-200 bg-gradient-to-r from-blue-50 to-white">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-blue-600 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    @Title
+                </h3>
+                @if (CanCancel)
+                {
+                    <button @onclick="OnCancelClick" 
+                            class="text-gray-400 hover:text-gray-600 transition-colors"
+                            disabled="@IsCompleted">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                }
+            </div>
+
+            <!-- 状态信息 -->
+            <div class="p-6 border-b border-gray-200 bg-gray-50">
+                <div class="flex items-center gap-3 mb-3">
+                    @if (IsCompleted)
+                    {
+                        <div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-lg font-semibold text-green-700">完成!</p>
+                            <p class="text-sm text-gray-600">@StatusMessage</p>
+                        </div>
+                    }
+                    else if (HasError)
+                    {
+                        <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                            <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-lg font-semibold text-red-700">失败</p>
+                            <p class="text-sm text-gray-600">@ErrorMessage</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                            <div class="animate-spin h-6 w-6 border-3 border-blue-600 rounded-full border-t-transparent"></div>
+                        </div>
+                        <div>
+                            <p class="text-lg font-semibold text-blue-700">@StatusMessage</p>
+                            @if (!string.IsNullOrEmpty(CurrentStep))
+                            {
+                                <p class="text-sm text-gray-600">@CurrentStep</p>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <!-- 进度条 -->
+                @if (!IsCompleted && !HasError && Progress > 0)
+                {
+                    <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                        <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: @(Progress)%"></div>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1 text-right">@Progress%</p>
+                }
+            </div>
+
+            <!-- 日志输出 -->
+            <div class="p-6">
+                <div class="mb-2 flex items-center justify-between">
+                    <h4 class="text-sm font-semibold text-gray-700">实时日志</h4>
+                    <button @onclick="ClearLogs" class="text-xs text-gray-500 hover:text-gray-700">清空</button>
+                </div>
+                <div class="bg-gray-900 rounded-lg p-4 h-64 overflow-y-auto font-mono text-xs text-green-400">
+                    @if (Logs.Any())
+                    {
+                        @foreach (var log in Logs)
+                        {
+                            <div class="mb-1">@log</div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="text-gray-500">暂无日志输出...</div>
+                    }
+                </div>
+            </div>
+
+            <!-- 底部按钮 -->
+            <div class="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
+                @if (IsCompleted || HasError)
+                {
+                    <button @onclick="OnClose" class="btn-primary px-6 py-2.5">
+                        关闭
+                    </button>
+                }
+                else if (CanCancel)
+                {
+                    <button @onclick="OnCancelClick" class="btn-default px-6 py-2.5">
+                        取消
+                    </button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Show { get; set; }
+    [Parameter] public string Title { get; set; } = "处理中";
+    [Parameter] public string StatusMessage { get; set; } = "正在处理...";
+    [Parameter] public string CurrentStep { get; set; } = string.Empty;
+    [Parameter] public int Progress { get; set; }
+    [Parameter] public List<string> Logs { get; set; } = new();
+    [Parameter] public bool IsCompleted { get; set; }
+    [Parameter] public bool HasError { get; set; }
+    [Parameter] public string ErrorMessage { get; set; } = string.Empty;
+    [Parameter] public bool CanCancel { get; set; } = true;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private void ClearLogs()
+    {
+        Logs.Clear();
+        StateHasChanged();
+    }
+
+    private async Task OnCancelClick()
+    {
+        if (OnCancel.HasDelegate)
+        {
+            await OnCancel.InvokeAsync();
+        }
+    }
+}
+

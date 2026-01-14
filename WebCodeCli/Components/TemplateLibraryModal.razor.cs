@@ -1,0 +1,368 @@
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.JSInterop;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using WebCodeCli.Domain.Domain.Model;
+
+namespace WebCodeCli.Components;
+
+public partial class TemplateLibraryModal : ComponentBase
+{
+    [Inject] private IJSRuntime JSRuntime { get; set; } = default!;
+
+    [Parameter] public EventCallback<PromptTemplate> OnTemplateSelected { get; set; }
+
+    private List<PromptTemplate> _templates = new();
+    private List<PromptTemplate> _filteredTemplates = new();
+    private bool _showModal = false;
+    private bool _showTemplateDialog = false;
+    private bool _isLoading = false;
+    private string _searchText = string.Empty;
+    private string _selectedCategory = string.Empty;
+    private PromptTemplate? _editingTemplate = null;
+    private TemplateFormModel _templateForm = new();
+
+    private const string LocalizedTitle = "模板库";
+    private const string LocalizedSearch = "搜索模板...";
+
+    public async Task OpenModal()
+    {
+        _showModal = true;
+        await LoadTemplatesAsync();
+    }
+
+    private void CloseModal()
+    {
+        _showModal = false;
+        _searchText = string.Empty;
+        _selectedCategory = string.Empty;
+    }
+
+    private async Task LoadTemplatesAsync()
+    {
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            // 等待 IndexedDB 准备就绪（最多等待 3 秒）
+            var maxRetries = 30;
+            var retryCount = 0;
+
+            while (retryCount < maxRetries)
+            {
+                try
+                {
+                    var isReady = await JSRuntime.InvokeAsync<bool>("webCliIndexedDB.isReady");
+                    if (isReady)
+                    {
+                        break;
+                    }
+                }
+                catch
+                {
+                    // 继续等待
+                }
+
+                await Task.Delay(100); // 等待 100ms
+                retryCount++;
+            }
+
+            if (retryCount >= maxRetries)
+            {
+                Console.WriteLine($"⚠️ IndexedDB 未就绪，无法加载模板（等待超时）");
+                _templates = new List<PromptTemplate>();
+                return;
+            }
+
+            var templates = await JSRuntime.InvokeAsync<PromptTemplate[]>("webCliIndexedDB.getAllTemplates");
+            if (templates != null && templates.Length > 0)
+            {
+                _templates = templates.ToList();
+            }
+            else
+            {
+                _templates = new List<PromptTemplate>();
+            }
+
+            FilterTemplates();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载模板失败: {ex.Message}");
+            _templates = new List<PromptTemplate>();
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void FilterTemplates()
+    {
+        var query = _templates.AsEnumerable();
+
+        // 按分类筛选
+        if (!string.IsNullOrEmpty(_selectedCategory))
+        {
+            query = query.Where(t => t.Category == _selectedCategory);
+        }
+
+        // 按搜索文本筛选
+        if (!string.IsNullOrWhiteSpace(_searchText))
+        {
+            var searchLower = _searchText.ToLower();
+            query = query.Where(t => 
+                t.Title.ToLower().Contains(searchLower) || 
+                t.Content.ToLower().Contains(searchLower) ||
+                t.Description.ToLower().Contains(searchLower));
+        }
+
+        // 排序：收藏的在前，然后按使用次数
+        _filteredTemplates = query
+            .OrderByDescending(t => t.IsFavorite)
+            .ThenByDescending(t => t.UsageCount)
+            .ThenByDescending(t => t.UpdatedAt)
+            .ToList();
+
+        StateHasChanged();
+    }
+
+    private async Task ToggleFavorite(PromptTemplate template)
+    {
+        template.IsFavorite = !template.IsFavorite;
+        template.UpdatedAt = DateTime.Now;
+        
+        await SaveTemplateAsync(template);
+        FilterTemplates();
+    }
+
+    private async Task UseTemplate(PromptTemplate template)
+    {
+        template.UsageCount++;
+        template.UpdatedAt = DateTime.Now;
+        
+        await SaveTemplateAsync(template);
+        
+        if (OnTemplateSelected.HasDelegate)
+        {
+            await OnTemplateSelected.InvokeAsync(template);
+        }
+
+        CloseModal();
+    }
+
+    private void ShowAddTemplateDialog()
+    {
+        _editingTemplate = null;
+        _templateForm = new TemplateFormModel
+        {
+            Icon = "⭐",
+            Category = "custom"
+        };
+        _showTemplateDialog = true;
+    }
+
+    private void ShowEditTemplateDialog(PromptTemplate template)
+    {
+        _editingTemplate = template;
+        _templateForm = new TemplateFormModel
+        {
+            Title = template.Title,
+            Content = template.Content,
+            Icon = template.Icon,
+            Category = template.Category,
+            Description = template.Description
+        };
+        _showTemplateDialog = true;
+    }
+
+    private void CloseTemplateDialog()
+    {
+        _showTemplateDialog = false;
+        _editingTemplate = null;
+        _templateForm = new TemplateFormModel();
+    }
+
+    private async Task SaveTemplate()
+    {
+        if (string.IsNullOrWhiteSpace(_templateForm.Title) || 
+            string.IsNullOrWhiteSpace(_templateForm.Content) ||
+            string.IsNullOrWhiteSpace(_templateForm.Icon))
+        {
+            return;
+        }
+
+        // 提取模板中的变量
+        var variables = ExtractVariables(_templateForm.Content);
+
+        if (_editingTemplate != null)
+        {
+            // 编辑现有模板
+            _editingTemplate.Title = _templateForm.Title;
+            _editingTemplate.Content = _templateForm.Content;
+            _editingTemplate.Icon = _templateForm.Icon;
+            _editingTemplate.Category = _templateForm.Category;
+            _editingTemplate.Description = _templateForm.Description;
+            _editingTemplate.Variables = variables;
+            _editingTemplate.UpdatedAt = DateTime.Now;
+            
+            await SaveTemplateAsync(_editingTemplate);
+        }
+        else
+        {
+            // 添加新模板
+            var newTemplate = new PromptTemplate
+            {
+                Id = Guid.NewGuid().ToString(),
+                Title = _templateForm.Title,
+                Content = _templateForm.Content,
+                Icon = _templateForm.Icon,
+                Category = _templateForm.Category,
+                Description = _templateForm.Description,
+                Variables = variables,
+                IsCustom = true,
+                IsFavorite = false,
+                CreatedAt = DateTime.Now,
+                UpdatedAt = DateTime.Now,
+                UsageCount = 0
+            };
+
+            await SaveTemplateAsync(newTemplate);
+            _templates.Add(newTemplate);
+        }
+
+        CloseTemplateDialog();
+        FilterTemplates();
+    }
+
+    private async Task SaveTemplateAsync(PromptTemplate template)
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("webCliIndexedDB.saveTemplate", template);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"保存模板失败: {ex.Message}");
+        }
+    }
+
+    private async Task DeleteTemplate(PromptTemplate template)
+    {
+        if (!template.IsCustom)
+        {
+            return;
+        }
+
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("webCliIndexedDB.deleteTemplate", template.Id);
+            _templates.Remove(template);
+            FilterTemplates();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"删除模板失败: {ex.Message}");
+        }
+    }
+
+    private async Task ExportTemplates()
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(_templates, new JsonSerializerOptions { WriteIndented = true });
+            var fileName = $"templates_{DateTime.Now:yyyyMMdd_HHmmss}.json";
+            
+            await JSRuntime.InvokeVoidAsync("downloadFile", fileName, json, "application/json");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"导出模板失败: {ex.Message}");
+        }
+    }
+
+    private async Task ImportTemplates(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var file = e.File;
+            if (file.ContentType != "application/json")
+            {
+                return;
+            }
+
+            using var stream = file.OpenReadStream(maxAllowedSize: 5 * 1024 * 1024); // 5MB
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+            
+            var importedTemplates = JsonSerializer.Deserialize<List<PromptTemplate>>(json);
+            if (importedTemplates != null && importedTemplates.Any())
+            {
+                foreach (var template in importedTemplates)
+                {
+                    // 确保ID唯一
+                    template.Id = Guid.NewGuid().ToString();
+                    template.IsCustom = true;
+                    template.CreatedAt = DateTime.Now;
+                    template.UpdatedAt = DateTime.Now;
+                    
+                    await SaveTemplateAsync(template);
+                    _templates.Add(template);
+                }
+
+                FilterTemplates();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"导入模板失败: {ex.Message}");
+        }
+    }
+
+    private List<string> ExtractVariables(string content)
+    {
+        var variables = new List<string>();
+        var regex = new Regex(@"\{\{(\w+)\}\}");
+        var matches = regex.Matches(content);
+
+        foreach (Match match in matches)
+        {
+            var variable = match.Groups[1].Value;
+            if (!variables.Contains(variable))
+            {
+                variables.Add(variable);
+            }
+        }
+
+        return variables;
+    }
+
+    private string GetCategoryName(string category)
+    {
+        return category switch
+        {
+            "all" => "全部",
+            "optimization" => "代码优化",
+            "documentation" => "文档",
+            "debugging" => "调试",
+            "refactoring" => "重构",
+            "testing" => "测试",
+            "review" => "审查",
+            "custom" => "自定义",
+            _ => category
+        };
+    }
+
+    private class TemplateFormModel
+    {
+        public string Title { get; set; } = string.Empty;
+        public string Content { get; set; } = string.Empty;
+        public string Icon { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+    }
+}
+

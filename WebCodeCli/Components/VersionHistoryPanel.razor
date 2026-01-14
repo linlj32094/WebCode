@@ -1,0 +1,364 @@
+@using WebCodeCli.Domain.Domain.Model
+@using WebCodeCli.Domain.Domain.Service
+@inject IGitService GitService
+@inject ICliExecutorService CliExecutorService
+
+<div class="h-full flex flex-col bg-white">
+    <!-- 头部：文件选择器 -->
+    <div class="p-3 sm:p-4 border-b border-gray-200 flex-shrink-0">
+        <div class="flex flex-col gap-2">
+            <!-- 文件路径输入 -->
+            <div class="flex items-center gap-2">
+                <label class="text-sm font-semibold text-gray-700 whitespace-nowrap">选择文件:</label>
+                @if (_workspaceFiles.Any())
+                {
+                    <select @bind="_selectedFilePath" 
+                            class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500 bg-white">
+                        <option value="">-- 请选择文件 --</option>
+                        @foreach (var file in _workspaceFiles)
+                        {
+                            <option value="@file">@file</option>
+                        }
+                    </select>
+                }
+                else
+                {
+                    <input type="text" 
+                           @bind="_selectedFilePath" 
+                           @bind:event="oninput"
+                           placeholder="输入文件路径（相对于工作区）"
+                           class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-500" />
+                }
+                <button @onclick="LoadFileHistory" 
+                        disabled="@(_isLoading || string.IsNullOrWhiteSpace(_selectedFilePath))"
+                        class="btn-primary px-4 py-2 text-sm flex items-center gap-2 disabled:opacity-50">
+                    @if (_isLoading)
+                    {
+                        <div class="animate-spin h-4 w-4 border-2 border-white rounded-full border-t-transparent"></div>
+                    }
+                    else
+                    {
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                    }
+                    查询
+                </button>
+            </div>
+            <!-- 工作区路径显示 -->
+            @if (!string.IsNullOrEmpty(_workspacePath))
+            {
+                <div class="flex items-center gap-2 text-xs text-gray-500">
+                    <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                    </svg>
+                    <span class="font-mono truncate" title="@_workspacePath">@_workspacePath</span>
+                </div>
+            }
+        </div>
+    </div>
+
+    <!-- 内容区域 -->
+    <div class="flex-1 overflow-y-auto p-4">
+        @if (!_isGitRepo)
+        {
+            <!-- 非 Git 仓库提示 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600 mb-2">当前工作区不是 Git 仓库</p>
+                <p class="text-sm text-gray-500 mb-4 text-center max-w-md">
+                    版本历史功能需要 Git 支持。如果您上传的是 Git 仓库文件，请确保包含 .git 文件夹。
+                </p>
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-md">
+                    <h4 class="text-sm font-semibold text-blue-800 mb-2 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        提示
+                    </h4>
+                    <ul class="text-xs text-blue-700 space-y-1">
+                        <li>• 上传包含 .git 文件夹的项目文件</li>
+                        <li>• 或在本地执行 <code class="bg-blue-100 px-1 rounded">git init</code> 初始化仓库后上传</li>
+                        <li>• 压缩包上传时确保包含隐藏文件</li>
+                    </ul>
+                </div>
+            </div>
+        }
+        else if (string.IsNullOrEmpty(_selectedFilePath))
+        {
+            <!-- 未选择文件提示 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">请选择文件</p>
+                <p class="text-sm mt-2 text-gray-500">
+                    @if (_workspaceFiles.Any())
+                    {
+                        <span>从上方下拉列表中选择文件并点击查询</span>
+                    }
+                    else
+                    {
+                        <span>在上方输入框中输入文件路径并点击查询</span>
+                    }
+                </p>
+            </div>
+        }
+        else if (_commits.Any())
+        {
+            <!-- 提交历史时间线 -->
+            <div class="space-y-4">
+                @foreach (var commit in _commits)
+                {
+                    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow bg-white">
+                        <div class="flex items-start gap-3">
+                            <!-- 时间线点 -->
+                            <div class="flex-shrink-0 w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center text-white font-mono text-xs">
+                                @commit.ShortHash
+                            </div>
+                            
+                            <!-- 提交信息 -->
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <h4 class="font-semibold text-gray-800 truncate">@commit.Message</h4>
+                                </div>
+                                <div class="flex items-center gap-4 text-xs text-gray-500 mb-3">
+                                    <span class="flex items-center gap-1">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                                        </svg>
+                                        @commit.Author
+                                    </span>
+                                    <span class="flex items-center gap-1">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                        </svg>
+                                        @FormatDate(commit.CommitDate)
+                                    </span>
+                                </div>
+                                
+                                <!-- 操作按钮 -->
+                                <div class="flex gap-2">
+                                    <button @onclick="() => ViewCommitContent(commit)" 
+                                            class="btn-default text-xs px-3 py-1.5 flex items-center gap-1.5">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                                        </svg>
+                                        查看内容
+                                    </button>
+                                    <button @onclick="() => CompareWithCurrent(commit)" 
+                                            class="btn-default text-xs px-3 py-1.5 flex items-center gap-1.5">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                                        </svg>
+                                        对比当前版本
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else if (!_isLoading)
+        {
+            <!-- 无提交记录 -->
+            <div class="flex flex-col items-center justify-center h-full text-gray-400">
+                <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-600">未找到提交记录</p>
+                <p class="text-sm mt-2 text-gray-500">该文件可能不在 Git 版本控制中</p>
+            </div>
+        }
+    </div>
+</div>
+
+<!-- 内容查看模态框 -->
+@if (_showContentModal && _selectedCommit != null)
+{
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @onclick="CloseContentModal">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col" @onclick:stopPropagation="true">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
+                <div>
+                    <h3 class="text-lg font-bold text-gray-800">@_selectedFilePath</h3>
+                    <p class="text-sm text-gray-500">提交: @_selectedCommit.ShortHash - @_selectedCommit.Message</p>
+                </div>
+                <button @onclick="CloseContentModal" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-auto p-4">
+                <pre class="text-sm font-mono bg-gray-50 p-4 rounded-lg border border-gray-200 overflow-x-auto">@_fileContent</pre>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public string SessionId { get; set; } = string.Empty;
+
+    [Parameter]
+    public EventCallback<(string filePath, string commitHash)> OnCompareToCurrent { get; set; }
+
+    private string _selectedFilePath = string.Empty;
+    private List<GitCommit> _commits = new();
+    private bool _isLoading = false;
+    private bool _isGitRepo = false;
+    private bool _showContentModal = false;
+    private GitCommit? _selectedCommit = null;
+    private string _fileContent = string.Empty;
+    private string _workspacePath = string.Empty;
+    private List<string> _workspaceFiles = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await InitializeWorkspace();
+    }
+
+    private async Task InitializeWorkspace()
+    {
+        try
+        {
+            _workspacePath = CliExecutorService.GetSessionWorkspacePath(SessionId);
+            _isGitRepo = await Task.Run(() => GitService.IsGitRepository(_workspacePath));
+            
+            // 如果是 Git 仓库，获取所有文件列表
+            if (_isGitRepo)
+            {
+                await LoadWorkspaceFiles();
+            }
+            
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"初始化工作区失败: {ex.Message}");
+        }
+    }
+
+    private async Task LoadWorkspaceFiles()
+    {
+        try
+        {
+            await Task.Run(() =>
+            {
+                var files = new List<string>();
+                
+                if (Directory.Exists(_workspacePath))
+                {
+                    // 递归获取所有文件（排除 .git 目录）
+                    var allFiles = Directory.GetFiles(_workspacePath, "*.*", SearchOption.AllDirectories);
+                    
+                    foreach (var file in allFiles)
+                    {
+                        // 跳过 .git 目录中的文件
+                        if (file.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}") || 
+                            file.Contains($"{Path.DirectorySeparatorChar}.git"))
+                        {
+                            continue;
+                        }
+                        
+                        // 获取相对路径
+                        var relativePath = Path.GetRelativePath(_workspacePath, file);
+                        files.Add(relativePath);
+                    }
+                }
+                
+                _workspaceFiles = files.OrderBy(f => f).ToList();
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载工作区文件失败: {ex.Message}");
+        }
+    }
+
+    private async Task LoadFileHistory()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedFilePath))
+        {
+            return;
+        }
+
+        _isLoading = true;
+        _commits.Clear();
+        StateHasChanged();
+
+        try
+        {
+            _commits = await GitService.GetFileHistoryAsync(_workspacePath, _selectedFilePath, 50);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载文件历史失败: {ex.Message}");
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ViewCommitContent(GitCommit commit)
+    {
+        try
+        {
+            _fileContent = await GitService.GetFileContentAtCommitAsync(_workspacePath, _selectedFilePath, commit.Hash);
+            _selectedCommit = commit;
+            _showContentModal = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"查看文件内容失败: {ex.Message}");
+        }
+    }
+
+    private async Task CompareWithCurrent(GitCommit commit)
+    {
+        if (OnCompareToCurrent.HasDelegate)
+        {
+            await OnCompareToCurrent.InvokeAsync((_selectedFilePath, commit.Hash));
+        }
+    }
+
+    private void CloseContentModal()
+    {
+        _showContentModal = false;
+        _selectedCommit = null;
+        _fileContent = string.Empty;
+        StateHasChanged();
+    }
+
+    private string FormatDate(DateTime date)
+    {
+        var now = DateTime.Now;
+        var diff = now - date;
+
+        if (diff.TotalMinutes < 1)
+            return "刚刚";
+        if (diff.TotalMinutes < 60)
+            return $"{(int)diff.TotalMinutes} 分钟前";
+        if (diff.TotalHours < 24)
+            return $"{(int)diff.TotalHours} 小时前";
+        if (diff.TotalDays < 7)
+            return $"{(int)diff.TotalDays} 天前";
+        if (date.Year == now.Year)
+            return date.ToString("MM-dd HH:mm");
+        
+        return date.ToString("yyyy-MM-dd");
+    }
+}

@@ -1,0 +1,47 @@
+namespace WebCodeCli.Domain.Domain.Model;
+
+/// <summary>
+/// 会话历史记录
+/// </summary>
+public class SessionHistory
+{
+    /// <summary>
+    /// 会话ID
+    /// </summary>
+    public string SessionId { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// 会话标题
+    /// </summary>
+    public string Title { get; set; } = "新会话";
+    
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    
+    /// <summary>
+    /// 最后更新时间
+    /// </summary>
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    
+    /// <summary>
+    /// 工作区路径
+    /// </summary>
+    public string WorkspacePath { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// 选中的工具ID
+    /// </summary>
+    public string ToolId { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// 消息列表
+    /// </summary>
+    public List<ChatMessage> Messages { get; set; } = new();
+    
+    /// <summary>
+    /// 工作区是否有效
+    /// </summary>
+    public bool IsWorkspaceValid { get; set; } = true;
+}
