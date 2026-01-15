@@ -14,6 +14,7 @@ services:
     image: webcodecli:latest
     container_name: webcodecli
     restart: unless-stopped
+    network_mode: host
     
     ports:
       - "${APP_PORT:-5000}:5000"
@@ -47,6 +48,8 @@ services:
       - webcodecli-workspaces:/app/workspaces
       # 日志持久化
       - webcodecli-logs:/app/logs
+      # 配置文件挂载
+      - /data/webcode/app/appsettings.json:/app/appsettings.json:ro
     
     # 资源限制
     deploy:
@@ -57,11 +60,7 @@ services:
         reservations:
           cpus: '1'
           memory: 1G
-    
-    # 网络配置
-    networks:
-      - webcodecli-network
-    
+
     # 日志配置
     logging:
       driver: "json-file"
@@ -77,8 +76,3 @@ volumes:
     driver: local
   webcodecli-logs:
     driver: local
-
-# 网络
-networks:
-  webcodecli-network:
-    driver: bridge
