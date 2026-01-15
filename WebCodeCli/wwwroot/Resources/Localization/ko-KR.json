@@ -181,7 +181,9 @@
     "versionHistory": "버전 기록",
     "fileDiff": "파일 비교",
     "fileMonitor": "실시간 모니터링",
-    "fileSearch": "파일 검색"
+    "fileSearch": "파일 검색",
+    "selectFile": "파일 선택",
+    "uploadToWorkspace": "작업 영역에 업로드"
   },
   "fileSearch": {
     "debugLabel": "디버그",
