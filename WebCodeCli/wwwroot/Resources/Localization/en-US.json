@@ -181,7 +181,9 @@
     "versionHistory": "Version History",
     "fileDiff": "File Diff",
     "fileMonitor": "File Monitor",
-    "fileSearch": "File Search"
+    "fileSearch": "File Search",
+    "selectFile": "Select File",
+    "uploadToWorkspace": "Upload to Workspace"
   },
   "fileSearch": {
     "debugLabel": "Debug",

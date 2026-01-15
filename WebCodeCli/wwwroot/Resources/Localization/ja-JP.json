@@ -181,7 +181,9 @@
     "versionHistory": "バージョン履歴",
     "fileDiff": "ファイル比較",
     "fileMonitor": "リアルタイム監視",
-    "fileSearch": "ファイル検索"
+    "fileSearch": "ファイル検索",
+    "selectFile": "ファイルを選択",
+    "uploadToWorkspace": "ワークスペースにアップロード"
   },
   "fileSearch": {
     "debugLabel": "デバッグ",

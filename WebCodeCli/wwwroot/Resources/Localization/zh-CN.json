@@ -181,7 +181,9 @@
     "versionHistory": "版本历史",
     "fileDiff": "文件对比",
     "fileMonitor": "实时监控",
-    "fileSearch": "文件搜索"
+    "fileSearch": "文件搜索",
+    "selectFile": "选择文件",
+    "uploadToWorkspace": "上传到工作区"
   },
   "fileSearch": {
     "debugLabel": "调试",
