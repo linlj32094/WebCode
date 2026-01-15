@@ -314,6 +314,14 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
         {
             try
             {
+                // 首次渲染后确保本地化资源已加载（避免 JS 互操作时机问题）
+                if (_translations.Count == 0)
+                {
+                    _currentLanguage = await L.GetCurrentLanguageAsync();
+                    await LoadTranslationsAsync();
+                    StateHasChanged();
+                }
+
                 // 设置iframe自动调整高度
                 await JSRuntime.InvokeVoidAsync("setupIframeAutoResize");
             }
@@ -4898,7 +4906,21 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
     /// </summary>
     private void OnLanguageChanged(string languageCode)
     {
-        // Page will reload automatically, no additional action needed
+        // 页面会刷新，但这里兜底强制刷新翻译缓存
+        _currentLanguage = languageCode;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await L.ReloadTranslationsAsync();
+                await LoadTranslationsAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"语言切换后刷新翻译失败: {ex.Message}");
+            }
+        });
     }
 
     #region 本地化辅助方法

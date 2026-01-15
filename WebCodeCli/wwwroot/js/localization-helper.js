@@ -231,7 +231,7 @@ window.localizationHelper = (function() {
     async function fetchTranslationFile(filePath) {
         try {
             console.log(`📥 正在加载翻译文件: ${filePath}`);
-            const response = await fetch(filePath);
+            const response = await fetch(filePath, { cache: 'no-store' });
             if (!response.ok) {
                 console.error(`❌ 加载翻译文件失败: HTTP ${response.status}`);
                 return '';
