@@ -159,4 +159,5 @@ echo "Starting WebCodeCli application as appuser..."
 echo "============================================"
 
 # 使用 setpriv 切换到 appuser 用户执行命令
-exec setpriv --reuid=appuser --regid=appuser --clear-groups "$@"
+# 注意：需要设置 HOME 环境变量，否则 codex/claude 会尝试读取 /root/.codex
+exec setpriv --reuid=appuser --regid=appuser --clear-groups env HOME="/home/appuser" "$@"
