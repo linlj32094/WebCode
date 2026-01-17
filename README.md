@@ -62,6 +62,7 @@ WebCodeCli 是一个**在线 AI 编程平台**，让你可以通过 Web 浏览�
 
 | 工具 | 命令 | 特点 | 状态 |
 |------|------|------|------|
+| **OpenCode CLI** | `opencode` | GitHub Models 集成、多模型支持、流式输出 | 🟡 计划支持 |
 | **GitHub Copilot CLI** | `copilot` | GitHub 集成、细粒度权限 | 🟡 已配置，待适配 |
 | **Qwen CLI** | `qwen` | YOLO 模式、检查点、扩展系统 | 🟡 已配置，待适配 |
 | **Gemini CLI** | `gemini` | Google AI、简洁配置 | 🟡 已配置，待适配 |

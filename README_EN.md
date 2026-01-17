@@ -62,6 +62,7 @@ WebCodeCli is an **online AI programming platform** that allows you to remotely 
 
 | Tool | Command | Features | Status |
 |------|---------|----------|--------|
+| **OpenCode CLI** | `opencode` | GitHub Models integration, multi-model support, streaming output | 🟡 Planned support |
 | **GitHub Copilot CLI** | `copilot` | GitHub integration, fine-grained permissions | 🟡 Configured, pending adaptation |
 | **Qwen CLI** | `qwen` | YOLO mode, checkpoints, extension system | 🟡 Configured, pending adaptation |
 | **Gemini CLI** | `gemini` | Google AI, simple configuration | 🟡 Configured, pending adaptation |

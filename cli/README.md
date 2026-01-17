@@ -55,19 +55,32 @@
   - 遥测配置
   - 检查点功能
 
+### 6. [OpenCode CLI](./opencode-help.md)
+- **命令**: `opencode`
+- **特点**:
+  - 多模型支持（通过 models.dev 集成）
+  - TUI 终端用户界面
+  - MCP 服务器支持
+  - Agent 系统
+  - 会话管理
+  - JSON 格式输出
+  - 服务器模式 (serve/web)
+
 ## 快速对比
 
-| 功能 | Claude | Codex | Qwen | Copilot | Gemini |
-|------|--------|-------|------|---------|--------|
-| 交互模式 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 非交互模式 | ✅ (-p) | ✅ (exec) | ✅ (-p) | ✅ (-p) | ✅ (-p) |
-| MCP 支持 | ✅ | ✅ | ✅ | ✅ | ❌ |
-| 沙箱模式 | ❌ | ✅ | ✅ | ❌ | ✅ |
-| 会话恢复 | ✅ | ✅ | ❌ | ✅ | ❌ |
-| 网络搜索 | ❌ | ✅ | ❌ | ❌ | ❌ |
-| Git 集成 | ❌ | ✅ | ❌ | ❌ | ❌ |
-| 扩展系统 | ✅ (plugin) | ❌ | ✅ | ❌ | ❌ |
-| 自定义指令 | ✅ | ❌ | ❌ | ✅ (AGENTS.md) | ❌ |
+| 功能 | Claude | Codex | Qwen | Copilot | Gemini | OpenCode |
+|------|--------|-------|------|---------|--------|----------|
+| 交互模式 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (TUI) |
+| 非交互模式 | ✅ (-p) | ✅ (exec) | ✅ (-p) | ✅ (-p) | ✅ (-p) | ✅ (run) |
+| MCP 支持 | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| 沙箱模式 | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| 会话恢复 | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
+| 网络搜索 | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Git 集成 | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 扩展系统 | ✅ (plugin) | ❌ | ✅ | ❌ | ❌ | ✅ (agent) |
+| 自定义指令 | ✅ | ❌ | ❌ | ✅ (AGENTS.md) | ❌ | ✅ (agent) |
+| 服务器模式 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Web 界面 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ## 常用场景推荐
 
@@ -93,6 +106,9 @@ codex exec "Generate unit tests for all functions"
 
 # Qwen - 简单提示
 qwen -p "Add documentation to all functions"
+
+# OpenCode - run 命令
+opencode run "Add comprehensive tests" --format json
 ```
 
 ### 自动化脚本
@@ -120,6 +136,14 @@ copilot --resume
 
 # Codex - 恢复上一个会话
 codex resume --last
+
+# OpenCode - 继续上次会话
+opencode --continue
+opencode -c
+
+# OpenCode - 恢复指定会话
+opencode --session <session_id>
+opencode run -s <session_id> "继续任务"
 ```
 
 ## 安装位置
@@ -135,9 +159,10 @@ codex resume --last
 - **Qwen**: 项目配置文件
 - **Copilot**: `~/.copilot/`
 - **Gemini**: 项目配置文件
+- **OpenCode**: `~/.local/share/opencode/` (数据和会话), `~/.opencode/` (配置)
 
 ## 更新日期
-2025年10月29日
+2026年1月17日
 
 ## 相关资源
 - 各工具的官方文档

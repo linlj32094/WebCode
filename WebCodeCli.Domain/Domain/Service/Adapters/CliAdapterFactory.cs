@@ -53,6 +53,7 @@ public class CliAdapterFactory : ICliAdapterFactory
         {
             new CodexAdapter(),
             new ClaudeCodeAdapter(),
+            new OpenCodeAdapter(),
             // 未来可以在这里添加更多适配器
             // new QwenCodeAdapter(),
             // new GeminiAdapter(),
@@ -74,6 +75,10 @@ public class CliAdapterFactory : ICliAdapterFactory
         if (!_adapters.Any(a => a is ClaudeCodeAdapter))
         {
             _adapters.Insert(1, new ClaudeCodeAdapter());
+        }
+        if (!_adapters.Any(a => a is OpenCodeAdapter))
+        {
+            _adapters.Insert(2, new OpenCodeAdapter());
         }
     }
 
