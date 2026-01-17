@@ -52,10 +52,14 @@ public class OpenCodeAdapter : ICliToolAdapter
 
         // OpenCode CLI 命令格式 (根据官方文档):
         // opencode run [message..] [options]
-        
+
         var sb = new StringBuilder();
         sb.Append("run");
-        
+
+        // 添加模型参数 (必需，否则 OpenCode 可能卡住)
+        var model = tool.ExtraOptions?.GetValueOrDefault("model") ?? "openai/gpt-4o-mini";
+        sb.Append($" --model {model}");
+
         // 添加会话恢复参数
         if (context.IsResume && !string.IsNullOrEmpty(context.CliThreadId))
         {
@@ -67,13 +71,13 @@ public class OpenCodeAdapter : ICliToolAdapter
             // 使用 --continue 继续上一个会话
             sb.Append(" --continue");
         }
-        
+
         // 添加提示词 (作为位置参数)
         sb.Append($" \"{escapedPrompt}\"");
-        
+
         // 添加 JSON 格式输出
         sb.Append(" --format json");
-        
+
         return sb.ToString();
     }
 
