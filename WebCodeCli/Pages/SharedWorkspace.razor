@@ -1,6 +1,7 @@
 @page "/shared-workspace/{ShareCode}"
 @namespace WebCodeCli.Pages
 @using WebCodeCli.Domain.Domain.Model
+@using WebCodeCli.Components
 @using System.Text
 @using System.Text.Json
 @using Markdig
@@ -202,55 +203,21 @@
                     </div>
 
                     <!-- 内容列表 -->
-                    <div class="flex-1 overflow-auto p-4 space-y-3">
+                    <div class="flex-1 overflow-hidden">
                         @if (HasOutputEvents)
                         {
-                            <!-- 显示输出事件（与 CodeAssistant 输出结果区一致） -->
-                            @foreach (var evt in _sessionInfo!.OutputEvents!)
-                            {
-                                var badgeClass = GetOutputEventBadgeClass(evt.Type);
-                                var badgeLabel = GetOutputEventBadgeLabel(evt.Type);
-                                var containerClass = GetOutputEventContainerClass(evt.Type);
-                                
-                                <div class="@containerClass border border-gray-200 rounded-lg p-4 shadow-sm transition-colors">
-                                    <div class="flex items-center justify-between gap-3">
-                                        <div class="flex items-center gap-2">
-                                            <span class="@badgeClass text-xs font-semibold px-2 py-0.5 rounded-full">@badgeLabel</span>
-                                            <span class="text-sm font-semibold text-gray-800">@evt.Title</span>
-                                        </div>
-                                        <span class="text-xs text-gray-400">@evt.Type</span>
-                                    </div>
-                                    @if (!string.IsNullOrEmpty(evt.Content))
-                                    {
-                                        <div class="mt-2 text-sm text-gray-700 leading-relaxed break-words prose prose-sm max-w-none">
-                                            @((MarkupString)RenderMarkdown(evt.Content))
-                                        </div>
-                                    }
-                                    @if (evt.Usage != null)
-                                    {
-                                        <div class="mt-3 bg-gray-50 border border-dashed border-gray-200 rounded-lg px-3 py-2">
-                                            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Token 使用情况</div>
-                                            <div class="mt-2 grid grid-cols-3 gap-2 text-xs text-gray-600">
-                                                <div class="flex flex-col">
-                                                    <span class="font-medium text-gray-500">输入</span>
-                                                    <span class="font-mono text-sm text-gray-800">@evt.Usage.InputTokens.ToString("N0")</span>
-                                                </div>
-                                                <div class="flex flex-col">
-                                                    <span class="font-medium text-gray-500">缓存输入</span>
-                                                    <span class="font-mono text-sm text-gray-800">@evt.Usage.CachedInputTokens.ToString("N0")</span>
-                                                </div>
-                                                <div class="flex flex-col">
-                                                    <span class="font-medium text-gray-500">输出</span>
-                                                    <span class="font-mono text-sm text-gray-800">@evt.Usage.OutputTokens.ToString("N0")</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    }
-                                </div>
-                            }
+                            <!-- 使用通用输出结果组件 -->
+                            <OutputResultPanel 
+                                ContainerId="shared-output-container"
+                                HasOutputEvents="true"
+                                TotalEventCount="@OutputEventCount"
+                                DisplayedEventCount="@OutputEventCount"
+                                EventGroups="@ConvertOutputEventsToGroups()"
+                                IsGroupOpenFunc="@(_ => true)" />
                         }
                         else if (_sessionInfo?.Messages?.Any() == true)
                         {
+                            <div class="p-4 space-y-3 overflow-y-auto h-full">
                             <!-- 回退：显示聊天消息 -->
                             @foreach (var message in _sessionInfo.Messages)
                             {
@@ -283,6 +250,7 @@
                                     </div>
                                 </div>
                             }
+                            </div>
                         }
                         else
                         {
@@ -793,47 +761,42 @@
         };
     }
     
-    private string GetOutputEventBadgeClass(string eventType)
+    /// <summary>
+    /// 将 OutputEventItem 转换为 OutputEventGroup
+    /// </summary>
+    private List<OutputEventGroup> ConvertOutputEventsToGroups()
     {
-        return eventType switch
+        if (_sessionInfo?.OutputEvents == null || !_sessionInfo.OutputEvents.Any())
         {
-            "thread.started" => "bg-indigo-100 text-indigo-700",
-            "turn.started" => "bg-sky-100 text-sky-700",
-            "turn.completed" => "bg-emerald-100 text-emerald-700",
-            "turn.failed" => "bg-red-100 text-red-700",
-            "item.started" => "bg-amber-100 text-amber-700",
-            "item.updated" => "bg-blue-100 text-blue-700",
-            "item.completed" => "bg-green-100 text-green-700",
-            "error" => "bg-red-100 text-red-700",
-            _ => "bg-gray-200 text-gray-700"
-        };
-    }
-    
-    private string GetOutputEventBadgeLabel(string eventType)
-    {
-        return eventType switch
+            return new List<OutputEventGroup>();
+        }
+
+        // 将每个事件转换为单独的组
+        return _sessionInfo.OutputEvents.Select((evt, index) => new OutputEventGroup
         {
-            "thread.started" => "线程启动",
-            "turn.started" => "交互开始",
-            "turn.completed" => "交互完成",
-            "turn.failed" => "交互失败",
-            "item.started" => "节点开始",
-            "item.updated" => "节点更新",
-            "item.completed" => "节点完成",
-            "error" => "错误",
-            _ => eventType
-        };
-    }
-    
-    private string GetOutputEventContainerClass(string eventType)
-    {
-        return eventType switch
-        {
-            "turn.completed" => "bg-emerald-50",
-            "turn.failed" or "error" => "bg-red-50",
-            "item.completed" => "bg-green-50",
-            _ => "bg-white"
-        };
+            Id = $"event_{index}",
+            Kind = "single",
+            Title = evt.Title,
+            IsCompleted = true,
+            IsCollapsible = false,
+            Items = new List<OutputEvent>
+            {
+                new OutputEvent
+                {
+                    Type = evt.Type,
+                    Title = evt.Title,
+                    Content = evt.Content ?? string.Empty,
+                    ItemType = evt.ItemType,
+                    Usage = evt.Usage != null ? new TokenUsage
+                    {
+                        InputTokens = evt.Usage.InputTokens,
+                        CachedInputTokens = evt.Usage.CachedInputTokens,
+                        OutputTokens = evt.Usage.OutputTokens,
+                        TotalTokens = evt.Usage.InputTokens + evt.Usage.CachedInputTokens + evt.Usage.OutputTokens
+                    } : null
+                }
+            }
+        }).ToList();
     }
 
     private async Task Reload()

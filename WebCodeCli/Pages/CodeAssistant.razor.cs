@@ -5592,6 +5592,62 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
 
     #endregion
 
+    #region 输出结果面板转换方法
+
+    /// <summary>
+    /// 将 JsonlEventGroup 转换为 OutputEventGroup
+    /// </summary>
+    private List<OutputEventGroup> ConvertToOutputEventGroups(List<JsonlEventGroup> jsonlGroups)
+    {
+        return jsonlGroups.Select(g => new OutputEventGroup
+        {
+            Id = g.Id,
+            Kind = g.Kind,
+            Title = g.Title,
+            IsCompleted = g.IsCompleted,
+            IsCollapsible = g.IsCollapsible,
+            Items = g.Items.Select(i => new OutputEvent
+            {
+                Type = i.Type,
+                Title = i.Title,
+                Content = i.Content,
+                Name = null, // JsonlDisplayItem 没有 Name 属性
+                ItemType = i.ItemType,
+                Usage = i.Usage != null ? new TokenUsage
+                {
+                    InputTokens = (int?)i.Usage.InputTokens,
+                    CachedInputTokens = (int?)i.Usage.CachedInputTokens,
+                    OutputTokens = (int?)i.Usage.OutputTokens,
+                    TotalTokens = (int?)i.Usage.TotalTokens
+                } : null
+            }).ToList()
+        }).ToList();
+    }
+
+    /// <summary>
+    /// 将 OutputEventGroup 转换回 JsonlEventGroup
+    /// </summary>
+    private JsonlEventGroup ConvertToJsonlGroup(OutputEventGroup outputGroup)
+    {
+        return new JsonlEventGroup
+        {
+            Id = outputGroup.Id,
+            Kind = outputGroup.Kind,
+            Title = outputGroup.Title,
+            IsCompleted = outputGroup.IsCompleted,
+            IsCollapsible = outputGroup.IsCollapsible
+        };
+    }
+
+    /// <summary>
+    /// 处理组折叠/展开事件
+    /// </summary>
+    private void HandleToggleGroup((string groupId, bool defaultOpen) args)
+    {
+        ToggleJsonlGroup(args.groupId, args.defaultOpen);
+    }
+
+    #endregion
+
     #endregion
 }
-
