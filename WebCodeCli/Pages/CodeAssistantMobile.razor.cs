@@ -408,6 +408,14 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         _inputMessage = string.Empty;
         _showQuickActions = false;
         _showSkillPicker = false; // 关闭技能选择器
+
+        var selectedTool = _availableTools.FirstOrDefault(t => t.Id == _selectedToolId);
+        InitializeJsonlState(IsJsonlTool(selectedTool));
+
+        if (_isJsonlOutputActive && _progressTracker != null)
+        {
+            _progressTracker.Start();
+        }
         
         // 添加用户消息
         _messages.Add(new ChatMessage
@@ -424,10 +432,10 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         // 滚动到底部
         await ScrollToBottom();
         
+        var contentBuilder = new StringBuilder();
+
         try
         {
-            var contentBuilder = new StringBuilder();
-            
             // 调用CLI执行服务
             await foreach (var chunk in CliExecutorService.ExecuteStreamAsync(
                 _sessionId,
@@ -448,6 +456,16 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
                 }
                 else if (chunk.IsCompleted)
                 {
+                    if (_isJsonlOutputActive)
+                    {
+                        ProcessJsonlChunk(string.Empty, flush: true);
+                        var finalJsonlContent = GetJsonlAssistantMessage();
+                        _currentAssistantMessage = finalJsonlContent;
+                        contentBuilder.Clear();
+                        contentBuilder.Append(finalJsonlContent);
+                        UpdateOutputRaw(finalJsonlContent);
+                    }
+
                     // 完成后添加助手消息
                     var finalContent = contentBuilder.ToString();
                     if (!string.IsNullOrEmpty(finalContent))
@@ -466,12 +484,20 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
                 {
                     // 流式内容
                     var chunkContent = chunk.Content ?? string.Empty;
-                    contentBuilder.Append(chunkContent);
-                    _currentAssistantMessage = contentBuilder.ToString();
-                    
-                    // 尝试解析JSONL事件
-                    ProcessJsonlContent(chunkContent);
-                    
+                    if (_isJsonlOutputActive)
+                    {
+                        ProcessJsonlChunk(chunkContent, flush: false);
+                        var liveContent = GetJsonlAssistantMessage();
+                        _currentAssistantMessage = liveContent;
+                        UpdateOutputRaw(liveContent);
+                    }
+                    else
+                    {
+                        contentBuilder.Append(chunkContent);
+                        _currentAssistantMessage = contentBuilder.ToString();
+                        UpdateOutputRaw(_currentAssistantMessage);
+                    }
+
                     await InvokeAsync(StateHasChanged);
                 }
             }
@@ -492,6 +518,24 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         }
         finally
         {
+            if (_isJsonlOutputActive)
+            {
+                ProcessJsonlChunk(string.Empty, flush: true);
+                _currentAssistantMessage = GetJsonlAssistantMessage();
+
+                if (_progressTracker != null)
+                {
+                    if (_messages.LastOrDefault()?.HasError == true)
+                    {
+                        _progressTracker.Fail(_messages.LastOrDefault()?.ErrorMessage ?? T("codeAssistant.errorOccurred"));
+                    }
+                    else
+                    {
+                        _progressTracker.Complete();
+                    }
+                }
+            }
+
             _isLoading = false;
             _currentAssistantMessage = string.Empty;
             StateHasChanged();
@@ -536,6 +580,8 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     private bool _isJsonlOutputActive = false;
     private string _activeThreadId = string.Empty;
     private string _rawOutput = string.Empty;
+    private string _jsonlPendingBuffer = string.Empty;
+    private StringBuilder? _jsonlAssistantMessageBuilder;
     
     private const int InitialDisplayCount = 20;
     private int _displayedEventCount = InitialDisplayCount;
@@ -543,61 +589,241 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     
     private readonly Dictionary<string, bool> _jsonlGroupOpenState = new();
     
-    private StringBuilder _jsonlBuffer = new();
-    
-    private void ProcessJsonlContent(string content)
+    private void InitializeJsonlState(bool enableJsonl)
     {
-        if (string.IsNullOrEmpty(content)) return;
-        
-        _jsonlBuffer.Append(content);
-        var bufferContent = _jsonlBuffer.ToString();
-        
-        // 尝试按行解析JSONL
-        var lines = bufferContent.Split('\n');
-        _jsonlBuffer.Clear();
-        
-        for (int i = 0; i < lines.Length; i++)
+        _isJsonlOutputActive = enableJsonl;
+        _jsonlPendingBuffer = string.Empty;
+        _activeThreadId = string.Empty;
+        _jsonlEvents.Clear();
+        _jsonlAssistantMessageBuilder = enableJsonl ? new StringBuilder() : null;
+        ResetEventDisplayCount();
+    }
+
+    private void ResetEventDisplayCount()
+    {
+        _displayedEventCount = InitialDisplayCount;
+    }
+
+    /// <summary>
+    /// 检查工具是否支持流式JSON解析（使用适配器工厂）
+    /// </summary>
+    private bool IsJsonlTool(CliToolConfig? tool)
+    {
+        if (tool == null)
         {
-            var line = lines[i].Trim();
-            
-            // 最后一行可能是不完整的，保存到缓冲区
-            if (i == lines.Length - 1 && !bufferContent.EndsWith("\n"))
+            return false;
+        }
+
+        return CliExecutorService.SupportsStreamParsing(tool);
+    }
+
+    /// <summary>
+    /// 获取当前选中工具的适配器
+    /// </summary>
+    private ICliToolAdapter? GetCurrentAdapter()
+    {
+        var tool = _availableTools.FirstOrDefault(t => t.Id == _selectedToolId);
+        return tool != null ? CliExecutorService.GetAdapter(tool) : null;
+    }
+
+    private void ProcessJsonlChunk(string content, bool flush)
+    {
+        if (!_isJsonlOutputActive)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(content))
+        {
+            _jsonlPendingBuffer += content;
+        }
+
+        while (true)
+        {
+            var newlineIndex = _jsonlPendingBuffer.IndexOf('\n');
+            if (newlineIndex < 0)
             {
-                _jsonlBuffer.Append(lines[i]);
-                continue;
+                break;
             }
-            
-            if (string.IsNullOrEmpty(line)) continue;
-            
-            try
+
+            var line = _jsonlPendingBuffer.Substring(0, newlineIndex).TrimEnd('\r');
+            _jsonlPendingBuffer = _jsonlPendingBuffer[(newlineIndex + 1)..];
+            HandleJsonlLine(line);
+        }
+
+        if (flush && !string.IsNullOrWhiteSpace(_jsonlPendingBuffer))
+        {
+            var remaining = _jsonlPendingBuffer.Trim();
+            _jsonlPendingBuffer = string.Empty;
+            HandleJsonlLine(remaining);
+        }
+    }
+
+    private void HandleJsonlLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return;
+        }
+
+        var adapter = GetCurrentAdapter();
+        if (adapter != null)
+        {
+            HandleJsonlLineWithAdapter(line, adapter);
+            return;
+        }
+
+        HandleJsonlLineLegacy(line);
+    }
+
+    private void HandleJsonlLineWithAdapter(string line, ICliToolAdapter adapter)
+    {
+        try
+        {
+            var outputEvent = adapter.ParseOutputLine(line);
+            if (outputEvent == null)
             {
-                var jsonDoc = JsonDocument.Parse(line);
-                var root = jsonDoc.RootElement;
-                
-                var eventType = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "" : "";
-                var itemType = root.TryGetProperty("item_type", out var itemTypeProp) ? itemTypeProp.GetString() : null;
-                
-                // 根据事件类型提取内容
-                var eventContent = ExtractEventContent(root, eventType);
-                var eventTitle = GetEventTitle(eventType, itemType);
-                
-                // 只处理有意义的事件（忽略 system init 等）
-                if (!string.IsNullOrEmpty(eventType) && ShouldDisplayEvent(eventType, eventContent))
+                return;
+            }
+
+            var sessionId = adapter.ExtractSessionId(outputEvent);
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                _activeThreadId = sessionId;
+                CliExecutorService.SetCliThreadId(_sessionId, sessionId);
+            }
+
+            var assistantMessage = adapter.ExtractAssistantMessage(outputEvent);
+            if (!string.IsNullOrEmpty(assistantMessage))
+            {
+                _jsonlAssistantMessageBuilder?.Append(assistantMessage);
+            }
+
+            var displayItem = new JsonlDisplayItem
+            {
+                Type = outputEvent.EventType,
+                Title = adapter.GetEventTitle(outputEvent),
+                Content = GetEventDisplayContent(outputEvent, outputEvent.Content),
+                ItemType = outputEvent.ItemType,
+                IsUnknown = outputEvent.IsUnknown
+            };
+
+            if (outputEvent.Usage != null)
+            {
+                displayItem.Usage = new JsonlUsageDetail
                 {
-                    OnJsonlEvent(new JsonlDisplayItem
-                    {
-                        Type = eventType,
-                        Title = eventTitle,
-                        Content = eventContent,
-                        ItemType = itemType
-                    });
-                }
+                    InputTokens = outputEvent.Usage.InputTokens,
+                    CachedInputTokens = outputEvent.Usage.CachedInputTokens,
+                    OutputTokens = outputEvent.Usage.OutputTokens
+                };
             }
-            catch
+
+            _jsonlEvents.Add(displayItem);
+
+            UpdateProgressTracker(outputEvent.EventType);
+        }
+        catch (Exception ex)
+        {
+            AddUnknownJsonlEvent($"适配器处理失败: {ex.Message}", line);
+        }
+    }
+
+    private void HandleJsonlLineLegacy(string line)
+    {
+        try
+        {
+            using var jsonDoc = JsonDocument.Parse(line);
+            var root = jsonDoc.RootElement;
+
+            var eventType = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? string.Empty : string.Empty;
+            var itemType = root.TryGetProperty("item_type", out var itemTypeProp) ? itemTypeProp.GetString() : null;
+
+            var eventContent = ExtractEventContent(root, eventType);
+            var eventTitle = GetEventTitle(eventType, itemType);
+
+            if (!string.IsNullOrEmpty(eventType) && ShouldDisplayEvent(eventType, eventContent))
             {
-                // 不是有效的JSON，忽略
+                OnJsonlEvent(new JsonlDisplayItem
+                {
+                    Type = eventType,
+                    Title = eventTitle,
+                    Content = eventContent,
+                    ItemType = itemType
+                });
             }
         }
+        catch (Exception ex)
+        {
+            AddUnknownJsonlEvent($"解析 JSONL 失败: {ex.Message}", line);
+        }
+    }
+
+    private void UpdateProgressTracker(string eventType)
+    {
+        switch (eventType)
+        {
+            case "thread.started":
+            case "init":
+                _progressTracker?.UpdateStage("thread.started", ProgressTracker.StageStatus.Completed);
+                _progressTracker?.UpdateStage("turn.started", ProgressTracker.StageStatus.Active);
+                break;
+            case "turn.started":
+                _progressTracker?.UpdateStage("turn.started", ProgressTracker.StageStatus.Completed);
+                _progressTracker?.UpdateStage("item.started", ProgressTracker.StageStatus.Active);
+                break;
+            case "item.started":
+            case "tool_use":
+                _progressTracker?.UpdateStage("item.started", ProgressTracker.StageStatus.Completed);
+                _progressTracker?.UpdateStage("item.updated", ProgressTracker.StageStatus.Active);
+                break;
+            case "item.updated":
+            case "message":
+            case "tool_result":
+                _progressTracker?.UpdateStage("item.updated", ProgressTracker.StageStatus.Active);
+                break;
+            case "item.completed":
+                _progressTracker?.UpdateStage("item.updated", ProgressTracker.StageStatus.Completed);
+                break;
+            case "turn.completed":
+            case "result":
+                _progressTracker?.UpdateStage("turn.completed", ProgressTracker.StageStatus.Completed);
+                break;
+        }
+    }
+
+    private string GetEventDisplayContent(CliOutputEvent outputEvent, string? fallbackContent)
+    {
+        if (string.Equals(outputEvent.EventType, "turn.completed", StringComparison.OrdinalIgnoreCase))
+        {
+            return outputEvent.Usage is null
+                ? T("cliEvent.content.turnCompleted")
+                : T("cliEvent.content.turnCompletedWithUsage");
+        }
+
+        if (string.Equals(outputEvent.EventType, "turn.started", StringComparison.OrdinalIgnoreCase))
+        {
+            return T("cliEvent.content.turnStarted");
+        }
+
+        if (string.Equals(outputEvent.EventType, "thread.started", StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(outputEvent.SessionId)
+                ? T("cliEvent.content.threadId", ("id", outputEvent.SessionId))
+                : T("cliEvent.content.threadCreated");
+        }
+
+        return fallbackContent ?? string.Empty;
+    }
+
+    private void AddUnknownJsonlEvent(string reason, string rawLine)
+    {
+        _jsonlEvents.Add(new JsonlDisplayItem
+        {
+            Type = "unknown",
+            Title = T("cliEvent.title.unknown"),
+            Content = $"{reason}\n{rawLine}",
+            IsUnknown = true
+        });
     }
     
     /// <summary>
@@ -938,6 +1164,21 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
             IsCollapsible = outputGroup.IsCollapsible
         };
     }
+
+    private string GetJsonlAssistantMessage()
+    {
+        if (_jsonlAssistantMessageBuilder == null)
+        {
+            return string.Empty;
+        }
+
+        return _jsonlAssistantMessageBuilder.ToString();
+    }
+
+    private void UpdateOutputRaw(string content)
+    {
+        _rawOutput = content;
+    }
     
     private CancellationTokenSource? _cancellationTokenSource;
     
@@ -1006,6 +1247,9 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         _jsonlEvents.Clear();
         _rawOutput = string.Empty;
         _isJsonlOutputActive = false;
+        _jsonlPendingBuffer = string.Empty;
+        _jsonlAssistantMessageBuilder = null;
+        ResetEventDisplayCount();
         _workspaceFiles.Clear();
         _currentFolderItems.Clear();
         _breadcrumbs.Clear();
