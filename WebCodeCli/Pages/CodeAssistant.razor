@@ -944,6 +944,14 @@
                 </svg>
                 <span class="hidden sm:inline">@T("codeAssistant.sessionHistory")</span>
             </button>
+            <button @onclick="ShowProjectManageModal" 
+                    class="btn-default flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shadow-sm hover:shadow-md transition-all text-xs sm:text-sm px-3 sm:px-4 py-2 min-h-[40px] sm:min-h-[44px]"
+                    title="@T("project.title")">
+                <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                </svg>
+                <span class="hidden sm:inline">@T("project.title")</span>
+            </button>
             <button @onclick="ToggleContextPanel" 
                     class="btn-default flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shadow-sm hover:shadow-md transition-all text-xs sm:text-sm px-3 sm:px-4 py-2 min-h-[40px] sm:min-h-[44px]"
                     title="@T("codeAssistant.contextManagement")">
@@ -1954,3 +1962,9 @@
 
 <!-- 会话分享模态框 -->
 <ShareSessionModal @ref="_shareSessionModal" SessionId="@_sessionId" />
+
+<!-- 项目管理模态框 -->
+<ProjectManageModal @ref="_projectManageModal" OnProjectsChanged="OnProjectsChanged" />
+
+<!-- 项目选择模态框 -->
+<ProjectSelectModal @ref="_projectSelectModal" OnProjectSelected="OnProjectSelected" />
