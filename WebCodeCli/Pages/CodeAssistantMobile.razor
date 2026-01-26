@@ -218,6 +218,9 @@
 <!-- 环境变量配置模态框 -->
 <EnvironmentVariableConfigModal @ref="_envConfigModal" />
 
+<!-- 更新提示模态框 -->
+<UpdateNotificationModal @ref="_updateNotificationModal" />
+
 <!-- 文件操作菜单 -->
 @if (_showFileActionSheet && _selectedFileNode != null)
 {
@@ -311,7 +314,7 @@
                                 }
                                 else
                                 {
-                                    <div class="text-sm leading-relaxed break-words whitespace-pre-wrap">
+                                    <div class="text-sm leading-relaxed break-words whitespace-pre-wrap message-bubble">
                                         @if (message.Role == "user")
                                         {
                                             @message.Content
@@ -335,7 +338,7 @@
                             <div class="bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-md max-w-[85%] shadow-sm px-4 py-3">
                                 @if (!string.IsNullOrEmpty(_currentAssistantMessage))
                                 {
-                                    <div class="text-sm leading-relaxed break-words">@RenderMarkdown(_currentAssistantMessage)</div>
+                                    <div class="text-sm leading-relaxed break-words message-bubble">@RenderMarkdown(_currentAssistantMessage)</div>
                                 }
                                 else
                                 {
@@ -797,8 +800,22 @@
                 }
                 
                 <!-- 版本信息 -->
-                <div class="text-center py-4 text-xs text-gray-400">
-                    <p>WebCode Mobile</p>
+                <div class="text-center py-4">
+                    <button @onclick="CheckForUpdate" 
+                            class="text-xs text-gray-400 hover:text-gray-600 transition-colors flex flex-col items-center gap-1 mx-auto">
+                        <div class="flex items-center gap-1.5">
+                            <span>WebCode Mobile</span>
+                            <span class="font-mono font-medium">v@_currentVersion</span>
+                            @if (_hasUpdate)
+                            {
+                                <span class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                            }
+                        </div>
+                        @if (_hasUpdate)
+                        {
+                            <span class="text-blue-500 text-[10px]">@T("version.newVersionAvailable")</span>
+                        }
+                    </button>
                 </div>
             </div>
         </div>
@@ -1044,7 +1061,19 @@
     /* 消息气泡样式 */
     .message-bubble {
         word-break: break-word;
-        overflow-wrap: break-word;
+        overflow-wrap: anywhere;
+    }
+
+    .message-bubble * {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .message-bubble pre,
+    .message-bubble code {
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
     }
     
     /* 底部固定元素的阴影 */
