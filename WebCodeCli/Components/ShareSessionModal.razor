@@ -596,7 +596,7 @@
     {
         if (_createdShare != null)
         {
-            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", _createdShare.ShareUrl);
+            await JSRuntime.InvokeAsync<bool>("clipboardCopy.copyText", _createdShare.ShareUrl);
             _copied = true;
             StateHasChanged();
 
@@ -608,7 +608,7 @@
 
     private async Task CopyShareUrlByCode(string url)
     {
-        await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", url);
+        await JSRuntime.InvokeAsync<bool>("clipboardCopy.copyText", url);
     }
 
     private async Task DeleteShare(string shareCode)

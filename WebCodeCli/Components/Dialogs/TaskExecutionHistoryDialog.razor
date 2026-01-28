@@ -6,6 +6,7 @@
 @using System.Text.Json
 @inject HttpClient Http
 @inject ILogger<TaskExecutionHistoryDialog> Logger
+@inject IJSRuntime JSRuntime
 
 <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
     <div class="bg-white rounded-xl shadow-2xl max-w-5xl w-[90vw] max-h-[92vh] overflow-hidden flex flex-col">
@@ -156,6 +157,14 @@
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                                     </svg>
                                 </button>
+                                @if (_copied)
+                                {
+                                    <span class="text-xs text-green-600">已复制</span>
+                                }
+                                else if (!string.IsNullOrEmpty(_copyError))
+                                {
+                                    <span class="text-xs text-red-600">@_copyError</span>
+                                }
                                 <button @onclick="ToggleDisplayMode" 
                                         class="p-1.5 hover:bg-gray-200 rounded transition-colors flex items-center gap-1 text-xs text-gray-600"
                                         title="@(UseRichDisplay ? "切换到原始输出" : "切换到富文本显示")">
@@ -252,6 +261,8 @@
     private bool UseRichDisplay { get; set; } = true;
     private List<OutputEventGroup> ParsedEventGroups { get; set; } = new();
     private HashSet<string> OpenGroupIds { get; set; } = new();
+    private bool _copied;
+    private string _copyError = string.Empty;
     
     protected override async Task OnInitializedAsync()
     {
@@ -353,10 +364,76 @@
     
     private async Task CopyOutput()
     {
-        if (SelectedExecution?.Output == null) return;
-        
-        // 使用 JavaScript 复制到剪贴板
-        // 这里需要 JSInterop，简化处理
+        var content = BuildCopyContent();
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            _copyError = "无可复制内容";
+            _copied = false;
+            StateHasChanged();
+            return;
+        }
+
+        try
+        {
+            // 使用统一的剪贴板函数（含回退方案）
+            var success = await JSRuntime.InvokeAsync<bool>("clipboardCopy.copyText", content);
+            if (!success)
+            {
+                _copyError = "复制失败";
+                _copied = false;
+                Logger.LogWarning("复制输出失败：剪贴板操作返回 false");
+                StateHasChanged();
+                return;
+            }
+
+            _copyError = string.Empty;
+            _copied = true;
+            StateHasChanged();
+
+            await System.Threading.Tasks.Task.Delay(1500);
+            _copied = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            _copyError = "复制失败";
+            _copied = false;
+            Logger.LogError(ex, "复制输出失败");
+            StateHasChanged();
+        }
+    }
+
+    private string BuildCopyContent()
+    {
+        if (!string.IsNullOrWhiteSpace(SelectedExecution?.Output))
+        {
+            return SelectedExecution.Output!;
+        }
+
+        if (ParsedEventGroups.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var sb = new System.Text.StringBuilder();
+        foreach (var group in ParsedEventGroups)
+        {
+            if (!string.IsNullOrWhiteSpace(group.Title))
+            {
+                sb.AppendLine($"[{group.Title}]");
+            }
+
+            foreach (var item in group.Items)
+            {
+                if (!string.IsNullOrWhiteSpace(item.Content))
+                {
+                    sb.AppendLine(item.Content);
+                    sb.AppendLine();
+                }
+            }
+        }
+
+        return sb.ToString().TrimEnd();
     }
     
     private void ToggleDisplayMode()
