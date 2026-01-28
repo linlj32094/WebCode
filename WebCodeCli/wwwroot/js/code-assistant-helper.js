@@ -454,3 +454,40 @@ window.initCodeAssistantSplit = function(options) {
     divider._splitHandlers = { onPointerDown, onPointerMove, onPointerUp, onResize };
 };
 
+// 输入法组合状态监听（用于处理中文输入）
+window._compositionHandlers = window._compositionHandlers || {};
+
+window.setupCompositionEvents = function(elementId, dotNetRef) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+
+    // 清理旧的监听
+    window.disposeCompositionEvents(elementId);
+
+    const onStart = () => {
+        if (dotNetRef) {
+            dotNetRef.invokeMethodAsync('OnCompositionStart');
+        }
+    };
+
+    const onEnd = () => {
+        if (dotNetRef) {
+            dotNetRef.invokeMethodAsync('OnCompositionEnd');
+        }
+    };
+
+    el.addEventListener('compositionstart', onStart);
+    el.addEventListener('compositionend', onEnd);
+
+    window._compositionHandlers[elementId] = { el, onStart, onEnd, dotNetRef };
+};
+
+window.disposeCompositionEvents = function(elementId) {
+    const handler = window._compositionHandlers[elementId];
+    if (handler) {
+        handler.el.removeEventListener('compositionstart', handler.onStart);
+        handler.el.removeEventListener('compositionend', handler.onEnd);
+        delete window._compositionHandlers[elementId];
+    }
+};
+
