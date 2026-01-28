@@ -3939,6 +3939,15 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
     }
 
     /// <summary>
+    /// 处理侧边面板错误
+    /// </summary>
+    private void HandleSidePanelError(string error)
+    {
+        Console.WriteLine($"[侧边面板错误] {error}");
+        // 可以在这里添加Toast通知或其他错误提示
+    }
+
+    /// <summary>
     /// 从侧边面板打开环境变量配置
     /// </summary>
     private async Task OpenEnvConfigFromSidePanel()
