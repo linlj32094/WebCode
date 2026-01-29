@@ -2215,6 +2215,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     private bool _isPwaInstalled = false;
     private bool _isIosDevice = false;
     private bool _showIosPwaGuide = false;
+    private bool _showManualInstallGuide = false;
     
     /// <summary>
     /// 检查 PWA 安装状态
@@ -2224,15 +2225,12 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         try
         {
             // 检测设备类型
-            _isIosDevice = await JSRuntime.InvokeAsync<bool>("eval", 
-                "/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream");
+            _isIosDevice = await JSRuntime.InvokeAsync<bool>("PWA.isIosDevice");
             
-            var isAndroid = await JSRuntime.InvokeAsync<bool>("eval",
-                "/Android/.test(navigator.userAgent)");
+            var isAndroid = await JSRuntime.InvokeAsync<bool>("PWA.isAndroidDevice");
             
             // 检查是否已以独立模式运行（已安装）
-            _isPwaInstalled = await JSRuntime.InvokeAsync<bool>("eval", 
-                "window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true");
+            _isPwaInstalled = await JSRuntime.InvokeAsync<bool>("PWA.isStandalone");
             
             Console.WriteLine($"[PWA] iOS: {_isIosDevice}, Android: {isAndroid}, Installed: {_isPwaInstalled}");
             
@@ -2240,6 +2238,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
             {
                 _showPwaInstallPrompt = false;
                 _showIosPwaGuide = false;
+                _showManualInstallGuide = false;
                 return;
             }
             
@@ -2249,6 +2248,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
                 var dismissed = await JSRuntime.InvokeAsync<string>("localStorage.getItem", "pwa-ios-guide-dismissed");
                 _showIosPwaGuide = string.IsNullOrEmpty(dismissed) || dismissed != "true";
                 _showPwaInstallPrompt = false;
+                _showManualInstallGuide = false;
                 Console.WriteLine($"[PWA] iOS guide dismissed: {dismissed}, showing: {_showIosPwaGuide}");
             }
             else if (isAndroid)
@@ -2257,29 +2257,31 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
                 var dismissed = await JSRuntime.InvokeAsync<string>("localStorage.getItem", "pwa-android-prompt-dismissed");
                 
                 // 检查是否有延迟的安装提示（beforeinstallprompt 事件触发）
-                var hasInstallPrompt = await JSRuntime.InvokeAsync<bool>("eval", 
-                    "window.PWA && window.PWA.state && window.PWA.state.deferredPrompt !== null");
+                var hasInstallPrompt = await JSRuntime.InvokeAsync<bool>("PWA.hasInstallPrompt");
                 
                 // 如果有安装提示且用户没有关闭过，显示安装按钮
                 // 如果没有安装提示，也显示引导（用户可能需要手动添加）
                 if (hasInstallPrompt)
                 {
                     _showPwaInstallPrompt = string.IsNullOrEmpty(dismissed) || dismissed != "true";
+                    _showManualInstallGuide = false;
                 }
                 else
                 {
                     // Android 没有触发 beforeinstallprompt，也显示手动引导
-                    _showIosPwaGuide = string.IsNullOrEmpty(dismissed) || dismissed != "true";
+                    _showPwaInstallPrompt = false;
+                    _showManualInstallGuide = string.IsNullOrEmpty(dismissed) || dismissed != "true";
                 }
-                Console.WriteLine($"[PWA] Android hasPrompt: {hasInstallPrompt}, showPrompt: {_showPwaInstallPrompt}, showGuide: {_showIosPwaGuide}");
+                _showIosPwaGuide = false;
+                Console.WriteLine($"[PWA] Android hasPrompt: {hasInstallPrompt}, showPrompt: {_showPwaInstallPrompt}, showManualGuide: {_showManualInstallGuide}");
             }
             else
             {
                 // 其他设备（桌面等）
-                var hasInstallPrompt = await JSRuntime.InvokeAsync<bool>("eval", 
-                    "window.PWA && window.PWA.state && window.PWA.state.deferredPrompt !== null");
+                var hasInstallPrompt = await JSRuntime.InvokeAsync<bool>("PWA.hasInstallPrompt");
                 _showPwaInstallPrompt = hasInstallPrompt;
                 _showIosPwaGuide = false;
+                _showManualInstallGuide = false;
             }
         }
         catch (Exception ex)
@@ -2297,11 +2299,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     {
         try
         {
-            await JSRuntime.InvokeVoidAsync("eval", @"
-                if (window.PWA && window.PWA.promptInstall) {
-                    window.PWA.promptInstall();
-                }
-            ");
+            await JSRuntime.InvokeVoidAsync("PWA.promptInstall");
             
             // 安装后隐藏提示
             _showPwaInstallPrompt = false;
@@ -2331,6 +2329,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
             }
             _showIosPwaGuide = false;
             _showPwaInstallPrompt = false;
+            _showManualInstallGuide = false;
             StateHasChanged();
         }
         catch { }
