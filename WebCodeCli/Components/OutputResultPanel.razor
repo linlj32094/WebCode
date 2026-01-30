@@ -61,7 +61,10 @@
                                 <div class="flex items-center gap-2">
                                     <span class="text-xs text-gray-500 font-medium">@evt.Type</span>
                                     <!-- Copy Button -->
-                                    <button @onclick="@(() => CopyEventContent(eventKey, evt))" 
+                                        <button type="button"
+                                            @onclick="@(() => CopyEventContent(eventKey, evt))"
+                                            @onclick:stopPropagation="true"
+                                            @onclick:preventDefault="true"
                                             class="p-1 sm:p-1.5 rounded hover:bg-gray-200 transition-colors group relative"
                                             title="@CopyLabel"
                                             aria-label="@CopyLabel">
@@ -141,7 +144,7 @@
                         // Unified header style
                         var headerClass = "w-full px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors flex items-center justify-between gap-3 text-left border-b border-gray-100 group";
 
-                        <div @key="group.Id" class="@containerClass">
+                        <div @key="@group.Id" class="@containerClass">
                             <button type="button"
                                     class="@headerClass"
                                     @onclick="() => OnToggleGroup(group.Id, defaultOpen)">
@@ -217,25 +220,6 @@
                                                 </div>
                                                 <div class="flex items-center gap-2">
                                                     <span class="text-xs text-gray-500 font-medium flex-shrink-0">@evt.Type</span>
-                                                    <!-- Copy Button -->
-                                                    <button @onclick="@(() => CopyEventContent(eventKey, evt))" 
-                                                            @onclick:stopPropagation="true"
-                                                            class="p-1 sm:p-1.5 rounded hover:bg-gray-200 transition-colors group relative"
-                                                            title="@CopyLabel"
-                                                            aria-label="@CopyLabel">
-                                                        @if (_copiedEventId == eventKey)
-                                                        {
-                                                            <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                                                            </svg>
-                                                        }
-                                                        else
-                                                        {
-                                                            <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-500 group-hover:text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-                                                            </svg>
-                                                        }
-                                                    </button>
                                                 </div>
                                             </div>
                                             @* 对于执行完成类型的事件，如果有Usage信息则不显示Content，避免重复 *@
