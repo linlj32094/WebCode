@@ -6,7 +6,7 @@
 
 @if (_isVisible)
 {
-    <div class="fixed inset-0 z-50 overflow-hidden" @onclick="HandleBackdropClick">
+    <div class="fixed inset-0 z-[80] overflow-hidden" @onclick="HandleBackdropClick">
         <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
             <!-- 背景遮罩 -->
             <div class="fixed inset-0 transition-opacity bg-black/50 backdrop-blur-sm" aria-hidden="true"></div>
@@ -41,7 +41,11 @@
                     <div class="flex items-center gap-2">
                         @if (_previewType == PreviewType.Code)
                         {
-                            <button @onclick="CopyCode" class="btn-primary text-sm py-2 px-4 flex items-center gap-2">
+                            <button type="button"
+                                    @onclick="CopyCode"
+                                    @onclick:stopPropagation="true"
+                                    @onclick:preventDefault="true"
+                                    class="btn-primary text-sm py-2 px-4 flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
                                 </svg>
@@ -50,21 +54,27 @@
                         }
                         @if (_previewType == PreviewType.Office)
                         {
-                            <button @onclick="OpenInNewWindow" class="btn-primary text-sm py-2 px-4 flex items-center gap-2">
+                            <button type="button"
+                                    @onclick="OpenInNewWindow"
+                                    @onclick:stopPropagation="true"
+                                    class="btn-primary text-sm py-2 px-4 flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
                                 </svg>
                                 在新窗口打开
                             </button>
                         }
-                        <button @onclick="DownloadFile" class="btn-secondary text-sm py-2 px-4 flex items-center gap-2">
+                        <button type="button"
+                                @onclick="DownloadFile"
+                                @onclick:stopPropagation="true"
+                                class="btn-secondary text-sm py-2 px-4 flex items-center gap-2">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                             </svg>
                             下载文件
                         </button>
                     </div>
-                    <button @onclick="Close" class="text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg p-2 transition-all">
+                    <button type="button" @onclick="Close" @onclick:stopPropagation="true" class="text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg p-2 transition-all">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
