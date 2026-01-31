@@ -225,6 +225,9 @@
 <!-- 项目选择模态框 -->
 <ProjectSelectModal @ref="_projectSelectModal" OnProjectSelected="OnProjectSelected" />
 
+<!-- 项目管理模态框 -->
+<ProjectManageModal @ref="_projectManageModal" OnProjectsChanged="OnProjectsChanged" />
+
 <!-- 文件操作菜单 -->
 @if (_showFileActionSheet && _selectedFileNode != null)
 {
@@ -820,6 +823,22 @@
                 
                 <!-- 功能入口 -->
                 <div class="mx-4 bg-white rounded-2xl shadow-sm overflow-hidden">
+                    <button @onclick="ShowProjectManageModal"
+                            class="w-full flex items-center gap-4 px-4 py-4 hover:bg-gray-50 active:bg-gray-100 transition-colors border-b border-gray-100">
+                        <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center">
+                            <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                            </svg>
+                        </div>
+                        <div class="flex-1 text-left">
+                            <p class="font-medium text-gray-800">@T("project.title")</p>
+                            <p class="text-xs text-gray-500">@T("codeAssistant.projectManageDesc")</p>
+                        </div>
+                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                        </svg>
+                    </button>
+                    
                     <button @onclick="OpenEnvConfig"
                             class="w-full flex items-center gap-4 px-4 py-4 hover:bg-gray-50 active:bg-gray-100 transition-colors border-b border-gray-100">
                         <div class="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center">

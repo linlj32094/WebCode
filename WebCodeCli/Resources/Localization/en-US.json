@@ -209,6 +209,7 @@
     "selectSkill": "Select Skill",
     "envConfig": "Configure Environment",
     "envConfigDesc": "Manage environment variables required for tools",
+    "projectManageDesc": "Manage Git projects and code repositories",
     "contextManagement": "Context",
     "language": "Language",
     "expandPreview": "Expand Preview",

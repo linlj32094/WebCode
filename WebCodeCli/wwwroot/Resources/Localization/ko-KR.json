@@ -256,6 +256,7 @@
     "selectSkill": "스킬 선택",
     "envConfig": "환경 설정",
     "envConfigDesc": "도구에 필요한 환경 변수 관리",
+    "projectManageDesc": "Git 프로젝트 및 코드 저장소 관리",
     "contextManagement": "컨텍스트 관리",
     "language": "언어",
     "expandPreview": "미리보기 펼치기",

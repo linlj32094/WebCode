@@ -1582,6 +1582,26 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     }
 
     /// <summary>
+    /// 显示项目管理模态框
+    /// </summary>
+    private async Task ShowProjectManageModal()
+    {
+        if (_projectManageModal != null)
+        {
+            await _projectManageModal.ShowAsync();
+        }
+    }
+
+    /// <summary>
+    /// 项目列表变更回调
+    /// </summary>
+    private void OnProjectsChanged()
+    {
+        // 项目列表有变化时的处理（如需要可刷新相关UI）
+        StateHasChanged();
+    }
+
+    /// <summary>
     /// 创建新会话（带项目关联，移动端）
     /// </summary>
     private async Task CreateNewSessionWithProjectAsync(string? projectId, bool includeGit)
@@ -2248,6 +2268,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     private QuickActionsPanel _quickActionsPanel = default!;
     private UpdateNotificationModal _updateNotificationModal = default!;
     private ProjectSelectModal _projectSelectModal = default!;
+    private ProjectManageModal _projectManageModal = default!;
     
     // 版本相关
     private string _currentVersion = string.Empty;

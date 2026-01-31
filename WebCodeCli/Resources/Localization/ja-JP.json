@@ -256,6 +256,7 @@
     "selectSkill": "スキルを選択",
     "envConfig": "環境設定",
     "envConfigDesc": "ツールに必要な環境変数を管理する",
+    "projectManageDesc": "Gitプロジェクトとコードリポジトリを管理",
     "contextManagement": "コンテキスト管理",
     "language": "言語",
     "expandPreview": "プレビューを展開",
