@@ -38,7 +38,7 @@
                        @bind-value:event="oninput"
                        @bind-value:after="HandleFolderNameInputAfterBind"
                        @onkeydown="HandleKeyDownInternal"
-                       @onkeydown:preventDefault="@(ShouldPreventDefault())"
+                       @onkeydown:preventDefault="@(PreventDefaultOnKey && !_isComposing)"
                        id="create-folder-input"
                        type="text"
                        placeholder="@FolderNamePlaceholder"
@@ -88,6 +88,7 @@
     [Parameter] public EventCallback OnCreate { get; set; }
     [Parameter] public EventCallback<KeyboardEventArgs> OnKeyDown { get; set; }
     [Parameter] public EventCallback<string> FolderNameChanged { get; set; }
+    [Parameter] public bool PreventDefaultOnKey { get; set; }
 
     [Inject] private IJSRuntime JSRuntime { get; set; } = default!;
 
@@ -176,11 +177,5 @@
         }
 
         return OnKeyDown.InvokeAsync(args);
-    }
-
-    private bool ShouldPreventDefault()
-    {
-        // 只在非组合期间才阻止默认行为
-        return !_isComposing;
     }
 }
