@@ -1469,10 +1469,11 @@ public class CliExecutorService : ICliExecutorService
         {
             var rootFullPath = Path.GetFullPath(GetEffectiveWorkspaceRoot());
             var workspaceFullPath = Path.GetFullPath(workspacePath);
+            var expectedTempWorkspacePath = Path.GetFullPath(Path.Combine(rootFullPath, sessionId));
 
             // 防御：只允许删除 TempWorkspaceRoot 下的临时目录
-            if (!workspaceFullPath.StartsWith(rootFullPath, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(workspaceFullPath, rootFullPath, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathWithinDirectory(rootFullPath, workspaceFullPath) ||
+                !string.Equals(workspaceFullPath, expectedTempWorkspacePath, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning("跳过清理非临时目录: {SessionId}, {Path}", sessionId, workspaceFullPath);
                 return;
@@ -2193,6 +2194,26 @@ public class CliExecutorService : ICliExecutorService
 
         _logger.LogWarning("无法检测到NPM全局路径,将依赖系统PATH环境变量");
         return null;
+    }
+
+    private static bool IsPathWithinDirectory(string rootPath, string candidatePath)
+    {
+        var normalizedRoot = EnsureTrailingDirectorySeparator(Path.GetFullPath(rootPath));
+        var normalizedCandidate = Path.GetFullPath(candidatePath);
+
+        return normalizedCandidate.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string EnsureTrailingDirectorySeparator(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return path;
+        }
+
+        return path[^1] == Path.DirectorySeparatorChar || path[^1] == Path.AltDirectorySeparatorChar
+            ? path
+            : path + Path.DirectorySeparatorChar;
     }
 
     /// <summary>
@@ -2964,7 +2985,7 @@ sandbox = ""elevated""
             var normalizedWorkspace = Path.GetFullPath(workspacePath);
             var normalizedFile = Path.GetFullPath(fullPath);
 
-            if (!normalizedFile.StartsWith(normalizedWorkspace))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedFile))
             {
                 _logger.LogWarning("尝试访问工作区外的文件: {File}", relativePath);
                 return null;
@@ -3054,7 +3075,7 @@ sandbox = ""elevated""
             var normalizedWorkspace = Path.GetFullPath(workspacePath);
             var normalizedTarget = Path.GetFullPath(targetPath);
 
-            if (!normalizedTarget.StartsWith(normalizedWorkspace))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedTarget))
             {
                 _logger.LogWarning("尝试上传文件到工作区外: {File}", targetPath);
                 return false;
@@ -3102,7 +3123,7 @@ sandbox = ""elevated""
             var normalizedWorkspace = Path.GetFullPath(workspacePath);
             var normalizedTarget = Path.GetFullPath(targetPath);
 
-            if (!normalizedTarget.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedTarget))
             {
                 _logger.LogWarning("尝试在工作区外创建文件夹: {Folder}", targetPath);
                 return false;
@@ -3159,7 +3180,7 @@ sandbox = ""elevated""
             var normalizedWorkspace = Path.GetFullPath(workspacePath);
             var normalizedTarget = Path.GetFullPath(targetPath);
 
-            if (!normalizedTarget.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedTarget))
             {
                 _logger.LogWarning("尝试删除工作区外的项: {Path}", targetPath);
                 return false;
@@ -3232,8 +3253,8 @@ sandbox = ""elevated""
             var normalizedSource = Path.GetFullPath(fullSourcePath);
             var normalizedTarget = Path.GetFullPath(fullTargetPath);
 
-            if (!normalizedSource.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase) ||
-                !normalizedTarget.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedSource) ||
+                !IsPathWithinDirectory(normalizedWorkspace, normalizedTarget))
             {
                 _logger.LogWarning("尝试移动工作区外的项");
                 return false;
@@ -3310,8 +3331,8 @@ sandbox = ""elevated""
             var normalizedSource = Path.GetFullPath(fullSourcePath);
             var normalizedTarget = Path.GetFullPath(fullTargetPath);
 
-            if (!normalizedSource.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase) ||
-                !normalizedTarget.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedSource) ||
+                !IsPathWithinDirectory(normalizedWorkspace, normalizedTarget))
             {
                 _logger.LogWarning("尝试复制工作区外的项");
                 return false;
@@ -3396,8 +3417,8 @@ sandbox = ""elevated""
             var normalizedOld = Path.GetFullPath(fullOldPath);
             var normalizedNew = Path.GetFullPath(fullNewPath);
 
-            if (!normalizedOld.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase) ||
-                !normalizedNew.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase))
+            if (!IsPathWithinDirectory(normalizedWorkspace, normalizedOld) ||
+                !IsPathWithinDirectory(normalizedWorkspace, normalizedNew))
             {
                 _logger.LogWarning("尝试重命名工作区外的项");
                 return false;
@@ -3466,7 +3487,7 @@ sandbox = ""elevated""
                     var normalizedWorkspace = Path.GetFullPath(workspacePath);
                     var normalizedPath = Path.GetFullPath(fullPath);
 
-                    if (!normalizedPath.StartsWith(normalizedWorkspace, StringComparison.OrdinalIgnoreCase))
+                    if (!IsPathWithinDirectory(normalizedWorkspace, normalizedPath))
                     {
                         _logger.LogWarning("尝试删除工作区外的项: {Path}", fullPath);
                         continue;

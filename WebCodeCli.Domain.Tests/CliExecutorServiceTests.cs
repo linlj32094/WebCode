@@ -100,6 +100,116 @@ public class CliExecutorServiceTests
     }
 
     [Fact]
+    public async Task CleanupSessionWorkspace_WhenCustomWorkspaceMetadataWasDeleted_PreservesDirectoryContents()
+    {
+        const string sessionId = "session-custom-workspace";
+        const string username = "luhaiyan";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var customWorkspacePath = Path.Combine(tempRoot, "project-a");
+        var preservedFilePath = Path.Combine(customWorkspacePath, "keep.txt");
+
+        Directory.CreateDirectory(customWorkspacePath);
+        await File.WriteAllTextAsync(preservedFilePath, "keep");
+
+        try
+        {
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = username,
+                    WorkspacePath = customWorkspacePath,
+                    IsCustomWorkspace = true,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = []
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService());
+
+            var resolvedWorkspacePath = service.GetSessionWorkspacePath(sessionId);
+            Assert.Equal(customWorkspacePath, resolvedWorkspacePath);
+
+            await repository.DeleteByIdAndUsernameAsync(sessionId, username);
+
+            service.CleanupSessionWorkspace(sessionId);
+
+            Assert.True(Directory.Exists(customWorkspacePath));
+            Assert.True(File.Exists(preservedFilePath));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CleanupSessionWorkspace_WhenExpectedTempWorkspaceMetadataWasDeleted_StillDeletesTempDirectory()
+    {
+        const string sessionId = "session-temp-workspace";
+        const string username = "luhaiyan";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = username,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = []
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService());
+
+            var workspacePath = await service.InitializeSessionWorkspaceAsync(sessionId);
+            await File.WriteAllTextAsync(Path.Combine(workspacePath, "temp.txt"), "delete");
+
+            await repository.DeleteByIdAndUsernameAsync(sessionId, username);
+
+            service.CleanupSessionWorkspace(sessionId);
+
+            Assert.False(Directory.Exists(workspacePath));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ExecuteStreamAsync_WhenProcessTimesOut_ReturnsTimeoutChunkInsteadOfThrowing()
     {
         var tool = new CliToolConfig
