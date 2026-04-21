@@ -478,6 +478,159 @@ public class CliExecutorServiceTests
     }
 
     [Fact]
+    public async Task ExecuteStreamAsync_WhenOneTimeCodexTurnCompletedArrives_CompletesBeforeTimeoutOrProcessExit()
+    {
+        const string sessionId = "session-onetime-codex-turn-completed";
+        const string cliThreadId = "thread-onetime-turn-completed";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var scriptPath = Path.Combine(tempRoot, "codex-onetime-semantic-completed.cmd");
+
+        Directory.CreateDirectory(tempRoot);
+        await File.WriteAllTextAsync(
+            scriptPath,
+            """
+            @echo off
+            echo {"type":"thread.started","thread_id":"thread-onetime-turn-completed"}
+            echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+            powershell.exe -NoProfile -Command "Start-Sleep -Seconds 10"
+            """);
+
+        var tool = new CliToolConfig
+        {
+            Id = "codex-onetime-semantic-completed",
+            Name = "Codex One-Time Semantic Completed",
+            Command = "cmd.exe",
+            ArgumentTemplate = $"/d /c \"{scriptPath}\"",
+            TimeoutSeconds = 2,
+            Enabled = true
+        };
+
+        var options = Options.Create(new CliToolsOption
+        {
+            TempWorkspaceRoot = tempRoot,
+            Tools = [tool]
+        });
+
+        var service = new CliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            options,
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(new TestCodexLikeCommandAdapter("codex-onetime-semantic-completed")),
+            new StubCcSwitchService());
+
+        try
+        {
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, tool.Id, "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(
+                chunks,
+                c => !string.IsNullOrEmpty(c.Content) && c.Content.Contains("\"turn.completed\"", StringComparison.Ordinal));
+            Assert.Contains(chunks, c => c.IsCompleted && !c.IsError);
+            Assert.Equal(cliThreadId, service.GetCliThreadId(sessionId));
+        }
+        finally
+        {
+            service.CleanupSessionWorkspace(sessionId);
+            if (Directory.Exists(tempRoot))
+            {
+                try
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenOneTimeCodexTurnFailedArrives_ReturnsFailureWithoutTimeout()
+    {
+        const string sessionId = "session-onetime-codex-turn-failed";
+        const string upstreamError = "one-time retry exhausted";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var scriptPath = Path.Combine(tempRoot, "codex-onetime-semantic-failed.cmd");
+
+        Directory.CreateDirectory(tempRoot);
+        await File.WriteAllTextAsync(
+            scriptPath,
+            """
+            @echo off
+            echo {"type":"turn.failed","error":{"message":"one-time retry exhausted","code":500}}
+            powershell.exe -NoProfile -Command "Start-Sleep -Seconds 10"
+            """);
+
+        var tool = new CliToolConfig
+        {
+            Id = "codex-onetime-semantic-failed",
+            Name = "Codex One-Time Semantic Failed",
+            Command = "cmd.exe",
+            ArgumentTemplate = $"/d /c \"{scriptPath}\"",
+            TimeoutSeconds = 2,
+            Enabled = true
+        };
+
+        var options = Options.Create(new CliToolsOption
+        {
+            TempWorkspaceRoot = tempRoot,
+            Tools = [tool]
+        });
+
+        var service = new CliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            options,
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(new TestCodexLikeCommandAdapter("codex-onetime-semantic-failed")),
+            new StubCcSwitchService());
+
+        try
+        {
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, tool.Id, "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.Contains(
+                chunks,
+                c => !string.IsNullOrEmpty(c.Content) && c.Content.Contains("\"turn.failed\"", StringComparison.Ordinal));
+            var failureChunk = Assert.Single(chunks, chunk => chunk.IsError && chunk.IsCompleted);
+            Assert.Contains(upstreamError, failureChunk.ErrorMessage);
+            Assert.DoesNotContain("执行超时", failureChunk.ErrorMessage, StringComparison.Ordinal);
+        }
+        finally
+        {
+            service.CleanupSessionWorkspace(sessionId);
+            if (Directory.Exists(tempRoot))
+            {
+                try
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task ExecuteStreamAsync_WhenCodexTurnCompletedArrives_CompletesBeforeIdleFallbackOrTimeout()
     {
         const string sessionId = "session-codex-turn-completed";
@@ -1413,6 +1566,36 @@ public class CliExecutorServiceTests
 
         public string BuildArguments(CliToolConfig tool, string prompt, CliSessionContext context)
             => prompt;
+
+        public string BuildLowInterruptionArguments(CliToolConfig tool, CliSessionContext context)
+            => throw new NotSupportedException();
+
+        public CliOutputEvent? ParseOutputLine(string line) => _inner.ParseOutputLine(line);
+
+        public string? ExtractSessionId(CliOutputEvent outputEvent) => _inner.ExtractSessionId(outputEvent);
+
+        public string? ExtractAssistantMessage(CliOutputEvent outputEvent) => _inner.ExtractAssistantMessage(outputEvent);
+
+        public string GetEventTitle(CliOutputEvent outputEvent) => _inner.GetEventTitle(outputEvent);
+
+        public string GetEventBadgeClass(CliOutputEvent outputEvent) => _inner.GetEventBadgeClass(outputEvent);
+
+        public string GetEventBadgeLabel(CliOutputEvent outputEvent) => _inner.GetEventBadgeLabel(outputEvent);
+    }
+
+    private sealed class TestCodexLikeCommandAdapter(string toolId) : ICliToolAdapter
+    {
+        private readonly CodexAdapter _inner = new();
+
+        public string[] SupportedToolIds => [toolId];
+
+        public bool SupportsStreamParsing => true;
+
+        public bool CanHandle(CliToolConfig tool)
+            => string.Equals(tool.Id, toolId, StringComparison.OrdinalIgnoreCase);
+
+        public string BuildArguments(CliToolConfig tool, string prompt, CliSessionContext context)
+            => tool.ArgumentTemplate;
 
         public string BuildLowInterruptionArguments(CliToolConfig tool, CliSessionContext context)
             => throw new NotSupportedException();

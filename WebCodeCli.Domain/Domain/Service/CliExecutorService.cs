@@ -1304,20 +1304,25 @@ public class CliExecutorService : ICliExecutorService
 
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, timeoutCts.Token);
+        using var streamReadCts = CancellationTokenSource.CreateLinkedTokenSource(linkedCts.Token);
 
         // 同时读取标准输出和错误输出
         // 注意：某些 CLI 工具（如 Codex）会将正常输出也输出到 stderr
         _logger.LogInformation("创建标准输出读取任务");
-        var outputTask = ReadStreamAsync(process.StandardOutput, false, linkedCts.Token);
+        var outputTask = ReadStreamAsync(process.StandardOutput, false, streamReadCts.Token);
         _logger.LogInformation("创建错误输出读取任务");
-        var errorTask = ReadStreamAsync(process.StandardError, false, linkedCts.Token); // 不标记为错误
+        var errorTask = ReadStreamAsync(process.StandardError, false, streamReadCts.Token); // 不标记为错误
 
         _logger.LogInformation("开始合并流输出");
         int chunkCount = 0;
-    var fullOutput = new StringBuilder(); // 用于解析thread id
+        bool terminalEventDetected = false;
+        bool terminalEventIsError = false;
+        string? terminalEventErrorMessage = null;
+        var terminalEventBuffer = hasAdapter && adapter!.SupportsStreamParsing ? new StringBuilder() : null;
+        var fullOutput = new StringBuilder(); // 用于解析thread id
 
         // 合并两个流的输出
-        await using var mergedEnumerator = MergeStreamsAsync(outputTask, errorTask, linkedCts.Token).GetAsyncEnumerator();
+        await using var mergedEnumerator = MergeStreamsAsync(outputTask, errorTask, streamReadCts.Token).GetAsyncEnumerator();
         while (true)
         {
             StreamOutputChunk chunk;
@@ -1349,7 +1354,56 @@ public class CliExecutorService : ICliExecutorService
                 fullOutput.Append(chunk.Content);
             }
 
+            if (terminalEventBuffer != null && !string.IsNullOrEmpty(chunk.Content))
+            {
+                var terminalSignal = InspectAdapterTerminalSignal(
+                    sessionId,
+                    chunk.Content,
+                    adapter!,
+                    terminalEventBuffer);
+
+                if (terminalSignal.IsTerminal)
+                {
+                    terminalEventDetected = true;
+                    terminalEventIsError = terminalSignal.IsError;
+                    terminalEventErrorMessage = terminalSignal.ErrorMessage;
+                }
+            }
+
             yield return chunk;
+
+            if (terminalEventDetected)
+            {
+                _logger.LogInformation(
+                    "检测到一次性进程适配器终止事件，提前结束当前轮输出读取: Tool={ToolId}, Session={SessionId}, IsError={IsError}",
+                    tool.Id,
+                    sessionId,
+                    terminalEventIsError);
+
+                if (!streamReadCts.IsCancellationRequested)
+                {
+                    streamReadCts.Cancel();
+                }
+
+                break;
+            }
+        }
+
+        if (!terminalEventDetected && terminalEventBuffer is { Length: > 0 })
+        {
+            var terminalSignal = InspectAdapterTerminalSignal(
+                sessionId,
+                string.Empty,
+                adapter!,
+                terminalEventBuffer,
+                flushRemaining: true);
+
+            if (terminalSignal.IsTerminal)
+            {
+                terminalEventDetected = true;
+                terminalEventIsError = terminalSignal.IsError;
+                terminalEventErrorMessage = terminalSignal.ErrorMessage;
+            }
         }
         
         // 如果有适配器且还没有CLI线程ID，尝试从输出中解析
@@ -1369,37 +1423,49 @@ public class CliExecutorService : ICliExecutorService
         bool processTimedOut = false;
         bool processCancelled = false;
         
-        try
+        if (terminalEventDetected)
         {
-            await process.WaitForExitAsync(linkedCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            if (timeoutCts.Token.IsCancellationRequested)
+            if (!streamReadCts.IsCancellationRequested)
             {
-                processTimedOut = true;
-                try
-                {
-                    process.Kill(true);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "终止进程失败");
-                }
+                streamReadCts.Cancel();
             }
-            else
+
+            await WaitForProcessExitAfterTerminalSignalAsync(process, tool.Id, sessionId);
+        }
+        else
+        {
+            try
             {
-                processCancelled = true;
-                try
+                await process.WaitForExitAsync(linkedCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                if (timeoutCts.Token.IsCancellationRequested)
                 {
-                    if (!process.HasExited)
+                    processTimedOut = true;
+                    try
                     {
                         process.Kill(true);
                     }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "终止进程失败");
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.LogWarning(ex, "取消执行时终止进程失败");
+                    processCancelled = true;
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            process.Kill(true);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "取消执行时终止进程失败");
+                    }
                 }
             }
         }
@@ -1421,6 +1487,25 @@ public class CliExecutorService : ICliExecutorService
                 IsCompleted = true,
                 ErrorMessage = "执行已取消"
             };
+        }
+        else if (terminalEventDetected && terminalEventIsError)
+        {
+            yield return new StreamOutputChunk
+            {
+                IsError = true,
+                IsCompleted = true,
+                ErrorMessage = terminalEventErrorMessage ?? "执行失败"
+            };
+        }
+        else if (terminalEventDetected)
+        {
+            yield return new StreamOutputChunk
+            {
+                IsCompleted = true,
+                Content = string.Empty
+            };
+
+            _logger.LogInformation("CLI 工具通过语义终止事件完成: {Tool}", tool.Name);
         }
         else if (process.ExitCode != 0)
         {
@@ -1451,6 +1536,57 @@ public class CliExecutorService : ICliExecutorService
         }
 
         process?.Dispose();
+    }
+
+    private async Task WaitForProcessExitAfterTerminalSignalAsync(Process process, string toolId, string sessionId)
+    {
+        if (process.HasExited)
+        {
+            return;
+        }
+
+        try
+        {
+            using var gracefulExitCts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            await process.WaitForExitAsync(gracefulExitCts.Token);
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            if (process.HasExited)
+            {
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "等待语义终止后的进程自然退出时发生异常: Tool={ToolId}, Session={SessionId}", toolId, sessionId);
+        }
+
+        try
+        {
+            _logger.LogInformation(
+                "语义终止事件已到达，但进程仍未退出，主动结束一次性进程: Tool={ToolId}, Session={SessionId}, PID={ProcessId}",
+                toolId,
+                sessionId,
+                process.Id);
+            process.Kill(true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "主动结束一次性进程失败: Tool={ToolId}, Session={SessionId}", toolId, sessionId);
+            return;
+        }
+
+        try
+        {
+            using var killExitCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await process.WaitForExitAsync(killExitCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "等待被终止的一次性进程退出时发生异常: Tool={ToolId}, Session={SessionId}", toolId, sessionId);
+        }
     }
 
     private async IAsyncEnumerable<(string content, bool isError)> ReadStreamAsync(
