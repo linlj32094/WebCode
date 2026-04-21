@@ -43,6 +43,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
     private readonly object _activeExecutionsLock = new();
     private const string SupersededExecutionMessage = "当前回复已停止：同一会话收到了新的补充消息，请查看新卡片继续结果。";
     private const int StreamingStatusPulseIntervalMs = 900;
+    private static readonly TimeSpan StreamingStatusPulseQuietWindow = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// 鏈嶅姟鏄惁杩愯涓?
@@ -194,6 +195,22 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
         }
     }
 
+    public void PauseSessionStatusPulse(string sessionId, TimeSpan duration)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        lock (_activeExecutionsLock)
+        {
+            if (_activeExecutions.TryGetValue(sessionId, out var execution))
+            {
+                execution.PausePulse(duration);
+            }
+        }
+    }
+
     public FeishuChannelService(
         IOptions<FeishuOptions> options,
         ILogger<FeishuChannelService> logger,
@@ -316,6 +333,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
                 streamingChrome,
                 baseStatusMarkdown,
                 effectiveOptions.ThinkingMessage);
+            activeExecution.PausePulseForOverflowCard(StreamingStatusPulseQuietWindow);
             var statusPulseTask = RunStreamingStatusPulseAsync(activeExecution);
             var previousExecution = RegisterActiveExecution(sessionId, activeExecution);
             if (previousExecution != null)
@@ -714,6 +732,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
 
                 // 娴佸紡鏇存柊鍗＄墖锛堣妭娴佸湪 handle 鍐呴儴澶勭悊锛?
                 activeExecution.SetLatestRenderedContent(displayContent);
+                activeExecution.PausePulseForOverflowCard(StreamingStatusPulseQuietWindow);
                 await handle.UpdateAsync(displayContent);
 
                 _logger.LogDebug(
@@ -987,7 +1006,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
 
         chrome.OverflowOptions.Add(new FeishuStreamingCardOverflowOption
         {
-            Text = "更多会话...",
+            Text = chrome.OverflowOptions.Count > 0 ? "更多会话..." : "会话管理...",
             Value = new
             {
                 action = "open_session_manager",
@@ -1048,6 +1067,11 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
                 if (execution.CancellationTokenSource.IsCancellationRequested || execution.IsSuperseded)
                 {
                     break;
+                }
+
+                if (execution.IsPulsePaused())
+                {
+                    continue;
                 }
 
                 execution.AdvanceRunningStatus();
@@ -1375,6 +1399,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             _latestRenderedContent = initialContent;
             CancellationTokenSource = new CancellationTokenSource();
             OperationId = Guid.NewGuid();
+            PulseGate = new FeishuStreamingStatusPulseGate();
         }
 
         public Guid OperationId { get; }
@@ -1391,7 +1416,11 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
 
         public CancellationTokenSource CancellationTokenSource { get; }
 
+        public FeishuStreamingStatusPulseGate PulseGate { get; }
+
         public bool IsSuperseded => Volatile.Read(ref _superseded) == 1;
+
+        public bool IsPulsePaused() => PulseGate.IsPaused();
 
         public void SetLatestRenderedContent(string content)
         {
@@ -1414,6 +1443,19 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             Chrome.StatusMarkdown = FeishuStreamingStatusFormatter.WithRunningState(
                 BaseStatusMarkdown,
                 Interlocked.Increment(ref _runningFrame));
+        }
+
+        public void PausePulse(TimeSpan duration)
+        {
+            PulseGate.PauseFor(duration);
+        }
+
+        public void PausePulseForOverflowCard(TimeSpan duration)
+        {
+            if (Chrome.OverflowOptions.Count > 0)
+            {
+                PausePulse(duration);
+            }
         }
 
         public void SetCompletedStatus()

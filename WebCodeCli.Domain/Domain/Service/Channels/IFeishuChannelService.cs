@@ -93,6 +93,13 @@ public interface IFeishuChannelService
     bool IsSessionExecutionActive(string sessionId);
 
     /// <summary>
+    /// 暂停指定会话流式卡片的状态脉冲刷新一段时间
+    /// </summary>
+    /// <param name="sessionId">会话 ID</param>
+    /// <param name="duration">暂停时长</param>
+    void PauseSessionStatusPulse(string sessionId, TimeSpan duration);
+
+    /// <summary>
     /// 鍒涘缓鏂颁細璇?
     /// </summary>
     /// <param name="message">椋炰功 incoming 娑堟伅</param>

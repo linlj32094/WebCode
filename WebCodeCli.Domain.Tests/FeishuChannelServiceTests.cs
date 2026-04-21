@@ -346,6 +346,192 @@ public class FeishuChannelServiceTests
     }
 
     [Fact]
+    public async Task HandleIncomingMessageAsync_WithSessionOverflowMenu_SuppressesPulseWithinQuietWindow()
+    {
+        var repository = CreateRepository(out var repositoryProxy);
+        var sessionDirectoryService = new RecordingSessionDirectoryService(repositoryProxy);
+        var cardKit = new StreamingRecordingFeishuCardKitClient();
+        var chatSessionService = new RecordingChatSessionService();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-streaming-pulse-{Guid.NewGuid():N}");
+        var currentWorkspace = Path.Combine(workspaceRoot, "superpowers");
+        var otherWorkspace = Path.Combine(workspaceRoot, "backend");
+        Directory.CreateDirectory(currentWorkspace);
+        Directory.CreateDirectory(otherWorkspace);
+
+        repositoryProxy.Store(new ChatSessionEntity
+        {
+            SessionId = "11111111-current",
+            Username = "luhaiyan",
+            Title = "MMIS-Server*",
+            WorkspacePath = currentWorkspace,
+            ToolId = "codex",
+            FeishuChatKey = "oc_pulse_chat",
+            IsFeishuActive = true,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-30),
+            UpdatedAt = DateTime.UtcNow
+        });
+
+        repositoryProxy.Store(new ChatSessionEntity
+        {
+            SessionId = "22222222-other",
+            Username = "luhaiyan",
+            Title = "Backend API",
+            WorkspacePath = otherWorkspace,
+            ToolId = "claude-code",
+            FeishuChatKey = "oc_pulse_chat",
+            IsFeishuActive = false,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-60),
+            UpdatedAt = DateTime.UtcNow.AddMinutes(-5)
+        });
+
+        var cliExecutor = new TakeoverCliExecutor(currentWorkspace);
+        var serviceProvider = new TestServiceProvider(
+            repository,
+            sessionDirectoryService,
+            new StubFeishuUserBindingService(),
+            new StubUserFeishuBotConfigService(),
+            new StubUserContextService());
+
+        var service = new FeishuChannelService(
+            Options.Create(new FeishuOptions
+            {
+                Enabled = true,
+                AppId = "cli_test",
+                AppSecret = "secret"
+            }),
+            NullLogger<FeishuChannelService>.Instance,
+            cardKit,
+            serviceProvider,
+            cliExecutor,
+            chatSessionService);
+
+        try
+        {
+            var firstTask = service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_pulse_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-pulse-1",
+                Content = "先查一下 superpowers 计划文件"
+            });
+
+            await cliExecutor.ThreadIdPersisted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(1300, TestContext.Current.CancellationToken);
+
+            var firstHandle = Assert.Single(cardKit.Handles);
+            Assert.Single(firstHandle.Updates);
+            Assert.Single(firstHandle.StatusMarkdownSnapshots.Distinct(StringComparer.Ordinal));
+
+            var secondTask = service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_pulse_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-pulse-2",
+                Content = @"补充：D:\MMIS\Base\Docs\superpowers"
+            });
+
+            await Task.WhenAll(firstTask, secondTask);
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task HandleIncomingMessageAsync_WithSessionOverflowMenu_ResumesPulseAfterQuietWindow()
+    {
+        var repository = CreateRepository(out var repositoryProxy);
+        var sessionDirectoryService = new RecordingSessionDirectoryService(repositoryProxy);
+        var cardKit = new StreamingRecordingFeishuCardKitClient();
+        var chatSessionService = new RecordingChatSessionService();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-streaming-pulse-resume-{Guid.NewGuid():N}");
+        var currentWorkspace = Path.Combine(workspaceRoot, "superpowers");
+        var otherWorkspace = Path.Combine(workspaceRoot, "backend");
+        Directory.CreateDirectory(currentWorkspace);
+        Directory.CreateDirectory(otherWorkspace);
+
+        repositoryProxy.Store(new ChatSessionEntity
+        {
+            SessionId = "11111111-current",
+            Username = "luhaiyan",
+            Title = "MMIS-Server*",
+            WorkspacePath = currentWorkspace,
+            ToolId = "codex",
+            FeishuChatKey = "oc_pulse_resume_chat",
+            IsFeishuActive = true,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-30),
+            UpdatedAt = DateTime.UtcNow
+        });
+
+        repositoryProxy.Store(new ChatSessionEntity
+        {
+            SessionId = "22222222-other",
+            Username = "luhaiyan",
+            Title = "Backend API",
+            WorkspacePath = otherWorkspace,
+            ToolId = "claude-code",
+            FeishuChatKey = "oc_pulse_resume_chat",
+            IsFeishuActive = false,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-60),
+            UpdatedAt = DateTime.UtcNow.AddMinutes(-5)
+        });
+
+        var cliExecutor = new TakeoverCliExecutor(currentWorkspace);
+        var serviceProvider = new TestServiceProvider(
+            repository,
+            sessionDirectoryService,
+            new StubFeishuUserBindingService(),
+            new StubUserFeishuBotConfigService(),
+            new StubUserContextService());
+
+        var service = new FeishuChannelService(
+            Options.Create(new FeishuOptions
+            {
+                Enabled = true,
+                AppId = "cli_test",
+                AppSecret = "secret"
+            }),
+            NullLogger<FeishuChannelService>.Instance,
+            cardKit,
+            serviceProvider,
+            cliExecutor,
+            chatSessionService);
+
+        try
+        {
+            var firstTask = service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_pulse_resume_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-pulse-resume-1",
+                Content = "先查一下 superpowers 计划文件"
+            });
+
+            await cliExecutor.ThreadIdPersisted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(4200, TestContext.Current.CancellationToken);
+
+            var firstHandle = Assert.Single(cardKit.Handles);
+            Assert.True(firstHandle.Updates.Count > 1);
+            Assert.True(firstHandle.StatusMarkdownSnapshots.Distinct(StringComparer.Ordinal).Count() > 1);
+
+            var secondTask = service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_pulse_resume_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-pulse-resume-2",
+                Content = @"补充：D:\MMIS\Base\Docs\superpowers"
+            });
+
+            await Task.WhenAll(firstTask, secondTask);
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HandleIncomingMessageAsync_AttachesLowInterruptionButton_WhenFinalOutputContainsBacklog()
     {
         var repository = CreateRepository(out var repositoryProxy);

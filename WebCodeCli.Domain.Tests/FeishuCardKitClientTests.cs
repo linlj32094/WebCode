@@ -167,6 +167,11 @@ public class FeishuCardKitClientTests
         var chrome = new FeishuStreamingCardChrome();
         chrome.OverflowOptions.Add(new FeishuStreamingCardOverflowOption
         {
+            Text = "Backend API",
+            Value = new { action = "switch_session", session_id = "session-2", chat_key = "oc_stream_chat" }
+        });
+        chrome.OverflowOptions.Add(new FeishuStreamingCardOverflowOption
+        {
             Text = "更多会话...",
             Value = new { action = "open_session_manager" }
         });
@@ -181,9 +186,15 @@ public class FeishuCardKitClientTests
 
         using var createDoc = JsonDocument.Parse(handler.RequestBodies[1]);
         using var cardDoc = JsonDocument.Parse(createDoc.RootElement.GetProperty("data").GetString()!);
-        var statusModule = cardDoc.RootElement.GetProperty("body").GetProperty("elements")[0];
+        Assert.False(cardDoc.RootElement.GetProperty("config").TryGetProperty("streaming_mode", out _));
+        var elements = cardDoc.RootElement.GetProperty("body").GetProperty("elements");
+        var statusModule = elements[0];
+        var overflow = statusModule.GetProperty("extra");
 
         Assert.Equal("当前会话", statusModule.GetProperty("text").GetProperty("content").GetString());
+        Assert.Equal("overflow", overflow.GetProperty("tag").GetString());
+        Assert.Equal("Backend API", overflow.GetProperty("options")[0].GetProperty("text").GetProperty("content").GetString());
+        Assert.Equal("{\"action\":\"switch_session\",\"session_id\":\"session-2\",\"chat_key\":\"oc_stream_chat\"}", overflow.GetProperty("options")[0].GetProperty("value").GetString());
     }
 
     [Fact]
@@ -238,6 +249,36 @@ public class FeishuCardKitClientTests
     }
 
     [Fact]
+    public async Task CreateStreamingHandleAsync_KeepsClientStreamingMode_WhenNoOverflowActionsExist()
+    {
+        var handler = new StubHttpMessageHandler(
+        [
+            CreateJsonResponse("""{"tenant_access_token":"token-123","expire":7200}"""),
+            CreateJsonResponse("""{"code":0,"data":{"card_id":"card_123"}}"""),
+            CreateJsonResponse("""{"code":0,"data":{"message_id":"om_stream_success"}}""")
+        ]);
+
+        var client = CreateClient(handler);
+        var chrome = new FeishuStreamingCardChrome
+        {
+            StatusMarkdown = "当前会话"
+        };
+
+        await client.CreateStreamingHandleAsync(
+            "oc_stream_chat",
+            null,
+            "still have backlog",
+            "AI 助手",
+            TestContext.Current.CancellationToken,
+            chrome: chrome);
+
+        using var createDoc = JsonDocument.Parse(handler.RequestBodies[1]);
+        using var cardDoc = JsonDocument.Parse(createDoc.RootElement.GetProperty("data").GetString()!);
+
+        Assert.True(cardDoc.RootElement.GetProperty("config").GetProperty("streaming_mode").GetBoolean());
+    }
+
+    [Fact]
     public async Task FeishuStreamingHandle_FinishAsync_WaitsForInflightUpdate_AndBlocksLaterUpdates()
     {
         var updateEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -276,6 +317,35 @@ public class FeishuCardKitClientTests
             [
                 "update:1:streaming",
                 "finish:2:final"
+            ],
+            operations);
+    }
+
+    [Fact]
+    public async Task FeishuStreamingHandle_UpdateAsync_HonorsQuietWindowAfterUpdate()
+    {
+        var operations = new List<string>();
+        var handle = new FeishuStreamingHandle(
+            "card-1",
+            "message-1",
+            (content, sequence) =>
+            {
+                operations.Add($"update:{sequence}:{content}");
+                return Task.CompletedTask;
+            },
+            (content, sequence) => Task.CompletedTask,
+            throttleMs: 0,
+            quietWindowAfterUpdateMs: 120);
+
+        await handle.UpdateAsync("first");
+        await handle.UpdateAsync("second");
+        await Task.Delay(160, TestContext.Current.CancellationToken);
+        await handle.UpdateAsync("third");
+
+        Assert.Equal(
+            [
+                "update:1:first",
+                "update:2:third"
             ],
             operations);
     }

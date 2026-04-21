@@ -43,6 +43,39 @@ internal static class FeishuStreamingStatusFormatter
             : $"{baseStatusMarkdown} · {state}";
 }
 
+internal sealed class FeishuStreamingStatusPulseGate
+{
+    private long _pauseUntilUtcTicks;
+
+    public void PauseFor(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var pauseUntilUtcTicks = DateTimeOffset.UtcNow.Add(duration).UtcTicks;
+        while (true)
+        {
+            var currentPauseUntil = Volatile.Read(ref _pauseUntilUtcTicks);
+            if (currentPauseUntil >= pauseUntilUtcTicks)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _pauseUntilUtcTicks, pauseUntilUtcTicks, currentPauseUntil) == currentPauseUntil)
+            {
+                return;
+            }
+        }
+    }
+
+    public bool IsPaused()
+    {
+        return DateTimeOffset.UtcNow.UtcTicks < Volatile.Read(ref _pauseUntilUtcTicks);
+    }
+}
+
 /// <summary>
 /// 流式卡片下拉菜单项
 /// </summary>
@@ -52,6 +85,11 @@ public sealed class FeishuStreamingCardOverflowOption
     /// 菜单文本
     /// </summary>
     public string Text { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 按钮样式
+    /// </summary>
+    public string Type { get; set; } = "default";
 
     /// <summary>
     /// 选中后回传的动作值

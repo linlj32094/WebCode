@@ -66,6 +66,7 @@ public class FeishuCardActionService
     private const int SessionFilePreviewCharacterLimit = 4000;
     private const int ProjectBranchPageSize = 12;
     private const int StreamingStatusPulseIntervalMs = 900;
+    private static readonly TimeSpan StreamingStatusPulseQuietWindow = TimeSpan.FromSeconds(3);
 
     // 会话映射（从 FeishuChannelService 复制）
     private readonly Dictionary<string, string> _sessionMappings = new();
@@ -647,11 +648,14 @@ public class FeishuCardActionService
             useAdapter);
 
         using var statusPulseCts = new CancellationTokenSource();
+        var pulseGate = new FeishuStreamingStatusPulseGate();
+        PausePulseForOverflowCard(streamingChrome, pulseGate);
         var statusPulseTask = RunStreamingStatusPulseAsync(
             handle,
             streamingChrome,
             baseStatusMarkdown,
             () => latestRenderedContent,
+            pulseGate,
             statusPulseCts.Token);
 
         try
@@ -688,6 +692,7 @@ public class FeishuCardActionService
                 }
 
                 latestRenderedContent = displayContent;
+                PausePulseForOverflowCard(streamingChrome, pulseGate);
                 await handle.UpdateAsync(displayContent);
 
                 if (chunk.IsCompleted)
@@ -799,11 +804,14 @@ public class FeishuCardActionService
         var useAdapter = adapter != null && _cliExecutor.SupportsStreamParsing(tool);
 
         using var statusPulseCts = new CancellationTokenSource();
+        var pulseGate = new FeishuStreamingStatusPulseGate();
+        PausePulseForOverflowCard(streamingChrome, pulseGate);
         var statusPulseTask = RunStreamingStatusPulseAsync(
             handle,
             streamingChrome,
             baseStatusMarkdown,
             () => latestRenderedContent,
+            pulseGate,
             statusPulseCts.Token);
 
         try
@@ -840,6 +848,7 @@ public class FeishuCardActionService
                 }
 
                 latestRenderedContent = displayContent;
+                PausePulseForOverflowCard(streamingChrome, pulseGate);
                 await handle.UpdateAsync(displayContent);
 
                 if (chunk.IsCompleted)
@@ -954,6 +963,7 @@ public class FeishuCardActionService
         FeishuStreamingCardChrome streamingChrome,
         string baseStatusMarkdown,
         Func<string> contentAccessor,
+        FeishuStreamingStatusPulseGate pulseGate,
         CancellationToken cancellationToken)
     {
         var frameIndex = 0;
@@ -966,12 +976,28 @@ public class FeishuCardActionService
                 {
                     break;
                 }
+
+                if (pulseGate.IsPaused())
+                {
+                    continue;
+                }
+
                 streamingChrome.StatusMarkdown = FeishuStreamingStatusFormatter.WithRunningState(baseStatusMarkdown, ++frameIndex);
                 await handle.UpdateAsync(contentAccessor());
             }
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    private static void PausePulseForOverflowCard(
+        FeishuStreamingCardChrome streamingChrome,
+        FeishuStreamingStatusPulseGate pulseGate)
+    {
+        if (streamingChrome.OverflowOptions.Count > 0)
+        {
+            pulseGate.PauseFor(StreamingStatusPulseQuietWindow);
         }
     }
 
@@ -1187,7 +1213,51 @@ public class FeishuCardActionService
         var actualChatKey = chatKeyParts.Length >= 3 ? chatKeyParts[2].ToLowerInvariant() : chatKey.ToLowerInvariant();
 
         var username = ResolveFeishuUsername(actualChatKey, operatorUserId);
+        var currentStreamingSessionId = _feishuChannel.GetCurrentSession(actualChatKey, username);
+        var startedAt = DateTimeOffset.UtcNow;
+        _logger.LogInformation(
+            "[Feishu] switch_session requested: SessionId={SessionId}, RawChatKey={RawChatKey}, ActualChatKey={ActualChatKey}, OperatorUserId={OperatorUserId}, ResolvedUsername={ResolvedUsername}, AppId={AppId}, StartedAt={StartedAt:o}",
+            sessionId,
+            chatKey,
+            actualChatKey,
+            operatorUserId ?? string.Empty,
+            username ?? string.Empty,
+            appId ?? string.Empty,
+            startedAt);
+        _logger.LogInformation(
+            "📌 [FeishuSwitchTrace] Requested: SessionId={SessionId}, RawChatKey={RawChatKey}, ActualChatKey={ActualChatKey}, OperatorUserId={OperatorUserId}, ResolvedUsername={ResolvedUsername}, AppId={AppId}, StartedAt={StartedAt:o}",
+            sessionId,
+            chatKey,
+            actualChatKey,
+            operatorUserId ?? string.Empty,
+            username ?? string.Empty,
+            appId ?? string.Empty,
+            startedAt);
+
+        if (!string.IsNullOrWhiteSpace(currentStreamingSessionId))
+        {
+            _feishuChannel.PauseSessionStatusPulse(currentStreamingSessionId, StreamingStatusPulseQuietWindow);
+            _logger.LogInformation(
+                "📌 [FeishuSwitchTrace] PulsePaused: SessionId={SessionId}, ActualChatKey={ActualChatKey}, DurationMs={DurationMs}",
+                currentStreamingSessionId,
+                actualChatKey,
+                StreamingStatusPulseQuietWindow.TotalMilliseconds);
+        }
+
         var success = _feishuChannel.SwitchCurrentSession(actualChatKey, sessionId, username);
+        _logger.LogInformation(
+            "[Feishu] switch_session repository result: SessionId={SessionId}, ActualChatKey={ActualChatKey}, Success={Success}, ElapsedMs={ElapsedMs}",
+            sessionId,
+            actualChatKey,
+            success,
+            (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds);
+        _logger.LogInformation(
+            "📌 [FeishuSwitchTrace] RepositoryResult: SessionId={SessionId}, ActualChatKey={ActualChatKey}, Success={Success}, ElapsedMs={ElapsedMs}",
+            sessionId,
+            actualChatKey,
+            success,
+            (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds);
+
         if (success)
         {
             var workspacePath = GetSessionWorkspaceDisplay(sessionId);
@@ -1197,16 +1267,57 @@ public class FeishuCardActionService
             var sessionEntity = await detailRepo.GetByIdAsync(sessionId);
             var toolLabel = GetToolDisplayName(sessionEntity?.ToolId);
 
+            _logger.LogInformation(
+                "[Feishu] switch_session resolved details: SessionId={SessionId}, WorkspacePath={WorkspacePath}, ToolLabel={ToolLabel}, LastActiveTime={LastActiveTime:o}",
+                sessionId,
+                workspacePath,
+                toolLabel,
+                lastActiveTime);
+            _logger.LogInformation(
+                "📌 [FeishuSwitchTrace] ResolvedDetails: SessionId={SessionId}, WorkspacePath={WorkspacePath}, ToolLabel={ToolLabel}, LastActiveTime={LastActiveTime:o}",
+                sessionId,
+                workspacePath,
+                toolLabel,
+                lastActiveTime);
+
             // 后台异步发送会话历史卡片
             _ = Task.Run(async () =>
             {
                 try
                 {
+                    var historyStartedAt = DateTimeOffset.UtcNow;
+                    _logger.LogInformation(
+                        "[Feishu] switch_session history dispatch started: SessionId={SessionId}, ChatId={ChatId}, Username={Username}, AppId={AppId}, StartedAt={StartedAt:o}",
+                        sessionId,
+                        actualChatKey,
+                        username ?? string.Empty,
+                        appId ?? string.Empty,
+                        historyStartedAt);
+                    _logger.LogInformation(
+                        "📌 [FeishuSwitchTrace] HistoryDispatchStarted: SessionId={SessionId}, ChatId={ChatId}, Username={Username}, AppId={AppId}, StartedAt={StartedAt:o}",
+                        sessionId,
+                        actualChatKey,
+                        username ?? string.Empty,
+                        appId ?? string.Empty,
+                        historyStartedAt);
+
                     await SendExternalCliHistoryAsync(sessionId, actualChatKey, username, appId, lastActiveTime, workspacePath, toolLabel);
+
+                    _logger.LogInformation(
+                        "[Feishu] switch_session history dispatch finished: SessionId={SessionId}, ChatId={ChatId}, ElapsedMs={ElapsedMs}",
+                        sessionId,
+                        actualChatKey,
+                        (DateTimeOffset.UtcNow - historyStartedAt).TotalMilliseconds);
+                    _logger.LogInformation(
+                        "📌 [FeishuSwitchTrace] HistoryDispatchFinished: SessionId={SessionId}, ChatId={ChatId}, ElapsedMs={ElapsedMs}",
+                        sessionId,
+                        actualChatKey,
+                        (DateTimeOffset.UtcNow - historyStartedAt).TotalMilliseconds);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "❌ [会话历史] 发送会话历史失败，SessionId={SessionId}, ChatId={ChatId}", sessionId, actualChatKey);
+                    _logger.LogError(ex, "📌 [FeishuSwitchTrace] HistoryDispatchFailed: SessionId={SessionId}, ChatId={ChatId}", sessionId, actualChatKey);
 
                     // 尝试发送错误提示
                     try
@@ -1221,6 +1332,17 @@ public class FeishuCardActionService
                 $"✅ 已切换到会话 {sessionId[..8]}...\n🛠️ CLI 工具: {toolLabel}\n📂 当前工作目录: {workspacePath}\n📜 历史消息已发送到聊天窗口",
                 "success");
         }
+
+        _logger.LogWarning(
+            "[Feishu] switch_session failed: SessionId={SessionId}, ActualChatKey={ActualChatKey}, ResolvedUsername={ResolvedUsername}",
+            sessionId,
+            actualChatKey,
+            username ?? string.Empty);
+        _logger.LogWarning(
+            "📌 [FeishuSwitchTrace] Failed: SessionId={SessionId}, ActualChatKey={ActualChatKey}, ResolvedUsername={ResolvedUsername}",
+            sessionId,
+            actualChatKey,
+            username ?? string.Empty);
 
         return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 会话不存在，切换失败", "error");
     }
@@ -2286,7 +2408,7 @@ public class FeishuCardActionService
 
         chrome.OverflowOptions.Add(new FeishuStreamingCardOverflowOption
         {
-            Text = "更多会话...",
+            Text = chrome.OverflowOptions.Count > 0 ? "更多会话..." : "会话管理...",
             Value = new
             {
                 action = "open_session_manager",

@@ -237,12 +237,14 @@ public class FeishuCardKitClient : IFeishuCardKitClient
         }
 
         // 3. 鍒涘缓娴佸紡鍙ユ焺
+        var quietWindowAfterUpdateMs = ResolveQuietWindowAfterUpdateMs(chrome);
         return new FeishuStreamingHandle(
             cardId,
             messageId,
             (content, sequence) => UpdateCardCoreAsync(cardId, content, sequence, cardTitle, cancellationToken, effectiveOptions, chrome),
             (content, sequence) => UpdateCardCoreAsync(cardId, content, sequence, cardTitle, cancellationToken, effectiveOptions, chrome),
-            effectiveOptions.StreamingThrottleMs
+            effectiveOptions.StreamingThrottleMs,
+            quietWindowAfterUpdateMs
         );
     }
 
@@ -330,6 +332,7 @@ public class FeishuCardKitClient : IFeishuCardKitClient
         FeishuStreamingCardChrome? chrome,
         bool includeHeader)
     {
+        var config = BuildStreamingCardConfig(chrome);
         var body = new
         {
             elements = BuildStreamingCardElements(content, chrome)
@@ -340,11 +343,7 @@ public class FeishuCardKitClient : IFeishuCardKitClient
             return new
             {
                 schema = "2.0",
-                config = new
-                {
-                    update_multi = true,
-                    streaming_mode = true
-                },
+                config,
                 header = new
                 {
                     title = new
@@ -360,13 +359,40 @@ public class FeishuCardKitClient : IFeishuCardKitClient
         return new
         {
             schema = "2.0",
-            config = new
+            config,
+            body
+        };
+    }
+
+    private static object BuildStreamingCardConfig(FeishuStreamingCardChrome? chrome)
+    {
+        return ShouldEnableClientStreamingMode(chrome)
+            ? new
             {
                 update_multi = true,
                 streaming_mode = true
-            },
-            body
-        };
+            }
+            : new
+            {
+                update_multi = true
+            };
+    }
+
+    private static bool ShouldEnableClientStreamingMode(FeishuStreamingCardChrome? chrome)
+    {
+        // Mobile Feishu becomes unreliable when overflow actions live on cards marked
+        // as client-streaming. Keep server-side updates, but downgrade the card config
+        // so overflow callbacks are handled as normal interactive updates.
+        return chrome?.OverflowOptions.Count is not > 0;
+    }
+
+    private static int ResolveQuietWindowAfterUpdateMs(FeishuStreamingCardChrome? chrome)
+    {
+        // When overflow actions are present on a still-updating card, mobile Feishu often
+        // drops the click before card.action.trigger reaches the server. Leave a larger
+        // post-update quiet window so users can complete the overflow tap without the
+        // card re-rendering underneath them.
+        return chrome?.OverflowOptions.Count is > 0 ? 4000 : 0;
     }
 
     private object[] BuildStreamingCardElements(string content, FeishuStreamingCardChrome? chrome)
