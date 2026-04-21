@@ -429,6 +429,55 @@ public class CliExecutorServiceTests
     }
 
     [Fact]
+    public async Task ExecuteStreamAsync_WhenPersistentProcessStopsOutputButKeepsRunning_CompletesWithoutTimeoutError()
+    {
+        const string sessionId = "session-persistent-idle";
+
+        var tool = new CliToolConfig
+        {
+            Id = "persistent-idle-tool",
+            Name = "Persistent Idle Tool",
+            Command = "powershell.exe",
+            PersistentModeArguments = "-NoProfile -Command \"$line = [Console]::In.ReadLine(); Write-Output 'persisted-done'; Start-Sleep -Seconds 10\"",
+            UsePersistentProcess = true,
+            TimeoutSeconds = 4,
+            Enabled = true
+        };
+
+        var options = Options.Create(new CliToolsOption
+        {
+            TempWorkspaceRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N")),
+            Tools = [tool]
+        });
+
+        var service = new CliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            options,
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(),
+            new StubCcSwitchService());
+
+        try
+        {
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, tool.Id, "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(chunks, c => c.Content.Contains("persisted-done", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(chunks, c => c.IsCompleted && !c.IsError);
+        }
+        finally
+        {
+            service.CleanupSessionWorkspace(sessionId);
+        }
+    }
+
+    [Fact]
     public async Task ExecuteStreamAsync_WhenAdapterProvidesDetailedFailure_ReturnsUpstreamErrorMessage()
     {
         const string upstreamError = "unexpected status 402 Payment Required";

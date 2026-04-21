@@ -741,92 +741,179 @@ public class CliExecutorService : ICliExecutorService
     {
         var outputReader = processInfo.Process.StandardOutput;
         var errorReader = processInfo.Process.StandardError;
-        var buffer = new char[4096];
-        var outputBuilder = new StringBuilder();
+        var outputBuffer = new char[4096];
+        var errorBuffer = new char[4096];
         var lastOutputTime = DateTime.UtcNow;
         var noOutputTimeout = TimeSpan.FromSeconds(2); // 2秒无新输出则认为结束
+        var hasObservedOutput = false;
+        var outputClosed = false;
+        var errorClosed = false;
+        Task<int>? outputReadTask = null;
+        Task<int>? errorReadTask = null;
 
-        while (!cancellationToken.IsCancellationRequested)
+        using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        try
         {
-            bool hasNewOutput = false;
-            
-            // 尝试读取标准输出
-            if (outputReader.Peek() >= 0)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                int bytesRead = 0;
-                try
+                if (!outputClosed && outputReadTask == null)
                 {
-                    bytesRead = await outputReader.ReadAsync(buffer, 0, buffer.Length);
+                    outputReadTask = outputReader
+                        .ReadAsync(outputBuffer.AsMemory(0, outputBuffer.Length), readCts.Token)
+                        .AsTask();
                 }
-                catch (Exception ex)
+
+                if (!errorClosed && errorReadTask == null)
                 {
-                    _logger.LogWarning(ex, "读取标准输出时发生错误");
+                    errorReadTask = errorReader
+                        .ReadAsync(errorBuffer.AsMemory(0, errorBuffer.Length), readCts.Token)
+                        .AsTask();
+                }
+
+                if (outputReadTask == null && errorReadTask == null)
+                {
                     break;
                 }
-                
-                if (bytesRead > 0)
+
+                var waitTasks = new List<Task>(3);
+                if (outputReadTask != null)
                 {
-                    var content = new string(buffer, 0, bytesRead);
-                    outputBuilder.Append(content);
-                    lastOutputTime = DateTime.UtcNow;
-                    hasNewOutput = true;
-                    
-                    yield return new StreamOutputChunk
+                    waitTasks.Add(outputReadTask);
+                }
+
+                if (errorReadTask != null)
+                {
+                    waitTasks.Add(errorReadTask);
+                }
+
+                var delayTask = Task.Delay(50, cancellationToken);
+                waitTasks.Add(delayTask);
+
+                var completedTask = await Task.WhenAny(waitTasks);
+
+                if (ReferenceEquals(completedTask, delayTask))
+                {
+                    if ((outputReadTask?.IsCompleted ?? false) || (errorReadTask?.IsCompleted ?? false))
                     {
-                        Content = content,
-                        IsError = false,
-                        IsCompleted = false
-                    };
-                }
-            }
+                        continue;
+                    }
 
-            // 尝试读取错误输出
-            if (errorReader.Peek() >= 0)
-            {
-                int bytesRead = 0;
-                try
-                {
-                    bytesRead = await errorReader.ReadAsync(buffer, 0, buffer.Length);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "读取错误输出时发生错误");
-                    break;
-                }
-                
-                if (bytesRead > 0)
-                {
-                    var content = new string(buffer, 0, bytesRead);
-                    outputBuilder.Append(content);
-                    lastOutputTime = DateTime.UtcNow;
-                    hasNewOutput = true;
-                    
-                    yield return new StreamOutputChunk
+                    if (hasObservedOutput && (DateTime.UtcNow - lastOutputTime) > noOutputTimeout)
                     {
-                        Content = content,
-                        IsError = false, // Codex 输出到 stderr 也是正常内容
-                        IsCompleted = false
-                    };
+                        _logger.LogInformation("检测到输出结束（无新输出超过{Timeout}秒）", noOutputTimeout.TotalSeconds);
+                        readCts.Cancel();
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (ReferenceEquals(completedTask, outputReadTask))
+                {
+                    int charsRead;
+                    try
+                    {
+                        charsRead = await outputReadTask!;
+                    }
+                    catch (OperationCanceledException) when (readCts.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "读取标准输出时发生错误");
+                        break;
+                    }
+
+                    outputReadTask = null;
+                    if (charsRead <= 0)
+                    {
+                        outputClosed = true;
+                    }
+                    else
+                    {
+                        hasObservedOutput = true;
+                        lastOutputTime = DateTime.UtcNow;
+                        yield return new StreamOutputChunk
+                        {
+                            Content = new string(outputBuffer, 0, charsRead),
+                            IsError = false,
+                            IsCompleted = false
+                        };
+                    }
+                }
+
+                if (ReferenceEquals(completedTask, errorReadTask))
+                {
+                    int charsRead;
+                    try
+                    {
+                        charsRead = await errorReadTask!;
+                    }
+                    catch (OperationCanceledException) when (readCts.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "读取错误输出时发生错误");
+                        break;
+                    }
+
+                    errorReadTask = null;
+                    if (charsRead <= 0)
+                    {
+                        errorClosed = true;
+                    }
+                    else
+                    {
+                        hasObservedOutput = true;
+                        lastOutputTime = DateTime.UtcNow;
+                        yield return new StreamOutputChunk
+                        {
+                            Content = new string(errorBuffer, 0, charsRead),
+                            IsError = false, // Codex 输出到 stderr 也是正常内容
+                            IsCompleted = false
+                        };
+                    }
                 }
             }
-
-            // 检查是否超时无输出
-            if (!hasNewOutput && (DateTime.UtcNow - lastOutputTime) > noOutputTimeout && outputBuilder.Length > 0)
+        }
+        finally
+        {
+            if (!readCts.IsCancellationRequested)
             {
-                _logger.LogInformation("检测到输出结束（无新输出超过{Timeout}秒）", noOutputTimeout.TotalSeconds);
-                break;
+                readCts.Cancel();
             }
 
-            // 短暂等待，避免CPU占用过高
-            try
-            {
-                await Task.Delay(50, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                // 取消时优雅退出枚举器，避免将异常抛到上层
-                yield break;
-            }
+            await ObservePendingPersistentReadTaskAsync(outputReadTask, "标准输出");
+            await ObservePendingPersistentReadTaskAsync(errorReadTask, "错误输出");
+        }
+    }
+
+    private async Task ObservePendingPersistentReadTaskAsync(Task<int>? readTask, string streamName)
+    {
+        if (readTask == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await readTask;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogDebug("{StreamName}读取任务已取消", streamName);
+        }
+        catch (ObjectDisposedException)
+        {
+            _logger.LogDebug("{StreamName}读取任务对应的流已释放", streamName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "{StreamName}读取任务在收尾阶段结束异常", streamName);
         }
     }
 
