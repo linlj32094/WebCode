@@ -17,7 +17,7 @@ public class CodexAdapter : ICliToolAdapter
     /// - {session}: 会话恢复参数（如果有，格式为 "resume session_id"）
     /// </summary>
     public const string DefaultArgumentTemplate = "exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json {session} \"{prompt}\"";
-    public const string DefaultLowInterruptionArgumentTemplate = "exec resume --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json --full-auto {cliThreadId}";
+    public const string DefaultLowInterruptionArgumentTemplate = "exec resume --skip-git-repo-check --json --full-auto {cliThreadId}";
 
     public string[] SupportedToolIds => new[] { "codex" };
 

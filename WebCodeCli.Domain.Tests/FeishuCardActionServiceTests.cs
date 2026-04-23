@@ -192,6 +192,86 @@ public class FeishuCardActionServiceTests
     }
 
     [Fact]
+    public async Task HandleCardActionAsync_ExecuteCommand_AttachesLowInterruptionButton_WhenUserPromptContainsBacklog()
+    {
+        const string chatId = "oc_current_chat";
+        const string activeSessionId = "session-low-interruption-user-signal";
+
+        var cliExecutor = new RecordingCliExecutorService
+        {
+            SupportsLowInterruption = true,
+            StandardExecutionContent = "已完成这一小段改名和测试补齐。"
+        };
+        cliExecutor.SetCliThreadId(activeSessionId, "thread-low-interruption");
+        cliExecutor.SetSessionWorkspacePath(activeSessionId, @"D:\repo\superpowers");
+
+        var cardKit = new StubFeishuCardKitClient();
+        var feishuChannel = new StubFeishuChannelService(activeSessionId);
+        var service = CreateService(cliExecutor, feishuChannel, new TestServiceProvider(), cardKit);
+
+        await service.HandleCardActionAsync(
+            """{"action":"execute_command"}""",
+            chatId: chatId,
+            inputValues: "我继续沿着 backlog 的旧命名退场往下推");
+
+        await cliExecutor.WaitForExecutionAsync(TimeSpan.FromSeconds(3));
+        await feishuChannel.WaitForMessageAsync(TimeSpan.FromSeconds(3));
+
+        Assert.NotNull(cardKit.LastStreamingChrome);
+        var chrome = cardKit.LastStreamingChrome!;
+        var bottomAction = Assert.Single(chrome.BottomActions);
+        var valueJson = JsonSerializer.Serialize(bottomAction.Value);
+        Assert.Contains("\"action\":\"low_interruption_continue\"", valueJson);
+        Assert.Contains($"\"session_id\":\"{activeSessionId}\"", valueJson);
+    }
+
+    [Fact]
+    public async Task HandleCardActionAsync_ExecuteCommand_AttachesLowInterruptionButton_WhenOlderSessionContainsTodo()
+    {
+        const string chatId = "oc_current_chat";
+        const string activeSessionId = "session-low-interruption-session-history";
+
+        var cliExecutor = new RecordingCliExecutorService
+        {
+            SupportsLowInterruption = true,
+            StandardExecutionContent = "这次回复没有重复任何关键词。"
+        };
+        cliExecutor.SetCliThreadId(activeSessionId, "thread-low-interruption");
+        cliExecutor.SetSessionWorkspacePath(activeSessionId, @"D:\repo\superpowers");
+
+        var chatSessionService = new StubChatSessionService();
+        chatSessionService.Messages[activeSessionId] =
+        [
+            new ChatMessage
+            {
+                Role = "assistant",
+                Content = "TODO\n- finish the repository cleanup",
+                IsCompleted = true,
+                CreatedAt = DateTime.UtcNow.AddMinutes(-2)
+            }
+        ];
+
+        var cardKit = new StubFeishuCardKitClient();
+        var feishuChannel = new StubFeishuChannelService(activeSessionId);
+        var service = CreateService(cliExecutor, feishuChannel, new TestServiceProvider(), cardKit, chatSessionService);
+
+        await service.HandleCardActionAsync(
+            """{"action":"execute_command"}""",
+            chatId: chatId,
+            inputValues: "继续");
+
+        await cliExecutor.WaitForExecutionAsync(TimeSpan.FromSeconds(3));
+        await feishuChannel.WaitForMessageAsync(TimeSpan.FromSeconds(3));
+
+        Assert.NotNull(cardKit.LastStreamingChrome);
+        var chrome = cardKit.LastStreamingChrome!;
+        var bottomAction = Assert.Single(chrome.BottomActions);
+        var valueJson = JsonSerializer.Serialize(bottomAction.Value);
+        Assert.Contains("\"action\":\"low_interruption_continue\"", valueJson);
+        Assert.Contains($"\"session_id\":\"{activeSessionId}\"", valueJson);
+    }
+
+    [Fact]
     public async Task HandleCardActionAsync_LowInterruptionContinue_StartsNewStreamingCardWithoutPromptInjection()
     {
         const string chatId = "oc_current_chat";
@@ -1888,7 +1968,8 @@ public class FeishuCardActionServiceTests
         RecordingCliExecutorService cliExecutor,
         StubFeishuChannelService feishuChannel,
         IServiceProvider serviceProvider,
-        StubFeishuCardKitClient? cardKit = null)
+        StubFeishuCardKitClient? cardKit = null,
+        StubChatSessionService? chatSessionService = null)
     {
         var commandService = new FeishuCommandService(
             NullLogger<FeishuCommandService>.Instance,
@@ -1899,7 +1980,7 @@ public class FeishuCardActionServiceTests
             new FeishuHelpCardBuilder(),
             cardKit ?? new StubFeishuCardKitClient(),
             cliExecutor,
-            new StubChatSessionService(),
+            chatSessionService ?? new StubChatSessionService(),
             feishuChannel,
             NullLogger<FeishuCardActionService>.Instance,
             serviceProvider);
@@ -2110,13 +2191,27 @@ public class FeishuCardActionServiceTests
 
     private sealed class StubChatSessionService : IChatSessionService
     {
-        public void AddMessage(string sessionId, ChatMessage message) { }
+        public Dictionary<string, List<ChatMessage>> Messages { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-        public void ClearSession(string sessionId) { }
+        public void AddMessage(string sessionId, ChatMessage message)
+        {
+            if (!Messages.TryGetValue(sessionId, out var sessionMessages))
+            {
+                sessionMessages = [];
+                Messages[sessionId] = sessionMessages;
+            }
+
+            sessionMessages.Add(message);
+        }
+
+        public void ClearSession(string sessionId) => Messages.Remove(sessionId);
 
         public ChatMessage? GetMessage(string sessionId, string messageId) => null;
 
-        public List<ChatMessage> GetMessages(string sessionId) => [];
+        public List<ChatMessage> GetMessages(string sessionId)
+            => Messages.TryGetValue(sessionId, out var sessionMessages)
+                ? [.. sessionMessages]
+                : [];
 
         public void UpdateMessage(string sessionId, string messageId, Action<ChatMessage> updateAction) { }
     }

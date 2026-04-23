@@ -1345,8 +1345,7 @@ public class CliExecutorService : ICliExecutorService
             yield break;
         }
 
-        // 关闭标准输入
-        process.StandardInput.Close();
+        WriteStandardInput(process, BuildStandardInput(tool, adapter, sessionContext, useLowInterruption));
         
         _logger.LogInformation("进程已启动，PID: {ProcessId}，开始读取输出流", process.Id);
 
@@ -2514,6 +2513,43 @@ public class CliExecutorService : ICliExecutorService
         }
 
         throw new InvalidOperationException($"CLI tool '{tool.Id}' does not support low-interruption continue.");
+    }
+
+    private static string? BuildStandardInput(
+        CliToolConfig tool,
+        ICliToolAdapter? adapter,
+        CliSessionContext sessionContext,
+        bool useLowInterruption)
+    {
+        if (!useLowInterruption)
+        {
+            return null;
+        }
+
+        if (IsCodexExecution(tool, adapter))
+        {
+            return $"Continue the existing session {sessionContext.CliThreadId} and keep executing the current task.";
+        }
+
+        return null;
+    }
+
+    private static bool IsCodexExecution(CliToolConfig tool, ICliToolAdapter? adapter)
+    {
+        return string.Equals(tool.Id, "codex", StringComparison.OrdinalIgnoreCase)
+               || adapter is CodexAdapter
+               || (adapter?.SupportedToolIds.Any(static id =>
+                   string.Equals(id, "codex", StringComparison.OrdinalIgnoreCase)) ?? false);
+    }
+
+    private static void WriteStandardInput(Process process, string? standardInput)
+    {
+        if (!string.IsNullOrWhiteSpace(standardInput))
+        {
+            process.StandardInput.Write(standardInput);
+        }
+
+        process.StandardInput.Close();
     }
 
     /// <summary>

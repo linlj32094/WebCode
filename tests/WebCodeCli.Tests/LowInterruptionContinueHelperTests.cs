@@ -36,6 +36,8 @@ public sealed class LowInterruptionContinueHelperTests
     [Theory]
     [InlineData("Plan:\n1. finish api\n2. update ui")]
     [InlineData("BACKLOG\n- fix failing tests")]
+    [InlineData("TODO\n- keep going")]
+    [InlineData("task: continue migration cleanup")]
     public void Evaluate_UsesTextFallback_WhenLatestAssistantContainsPlanOrBacklog(string content)
     {
         var latestAssistant = CreateAssistant("latest", content);
@@ -52,8 +54,28 @@ public sealed class LowInterruptionContinueHelperTests
         Assert.Equal(latestAssistant.Id, result.MessageId);
     }
 
+    [Theory]
+    [InlineData("我继续沿着 backlog 往下推")]
+    [InlineData("please make a small plan and keep going")]
+    [InlineData("task list stays open")]
+    public void Evaluate_UsesSessionSignal_WhenAssistantDoesNotRepeatKeywords(string userContent)
+    {
+        var latestAssistant = CreateAssistant("latest", "这次回复只汇报执行结果，不重复关键词。");
+
+        var result = LowInterruptionContinueHelper.Evaluate(
+            [CreateUser(userContent), latestAssistant],
+            hasStructuredTodoList: false,
+            isToolSupported: true,
+            hasCliThreadId: true,
+            isProcessRunning: false);
+
+        Assert.True(result.ShowButton);
+        Assert.False(result.IsDisabled);
+        Assert.Equal(latestAssistant.Id, result.MessageId);
+    }
+
     [Fact]
-    public void Evaluate_DoesNotAggregateOlderAssistantSignals()
+    public void Evaluate_UsesOlderSessionSignalsAcrossWholeConversation()
     {
         var olderAssistant = CreateAssistant("older", "Backlog:\n- old unfinished work");
         var latestAssistant = CreateAssistant("latest", "这次回复已经收尾了");
@@ -65,8 +87,8 @@ public sealed class LowInterruptionContinueHelperTests
             hasCliThreadId: true,
             isProcessRunning: false);
 
-        Assert.False(result.ShowButton);
-        Assert.Null(result.MessageId);
+        Assert.True(result.ShowButton);
+        Assert.Equal(latestAssistant.Id, result.MessageId);
         Assert.False(LowInterruptionContinueHelper.IsMessageEligible(olderAssistant, result));
     }
 

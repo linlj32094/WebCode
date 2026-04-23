@@ -738,7 +738,7 @@ public class FeishuCardActionService
             latestRenderedContent = finalOutput;
             statusPulseCts.Cancel();
             streamingChrome.StatusMarkdown = FeishuStreamingStatusFormatter.WithCompletedState(baseStatusMarkdown);
-            TryAttachLowInterruptionAction(streamingChrome, sessionId, tool.Id, chatId, hasStructuredTodoList, finalOutput);
+            TryAttachLowInterruptionAction(streamingChrome, sessionId, tool.Id, chatId, hasStructuredTodoList, finalOutput, userPrompt);
             try
             {
                 // NOTE: 这条带会话标识的“已完成”普通文本通知不能删除。
@@ -894,7 +894,7 @@ public class FeishuCardActionService
             latestRenderedContent = finalOutput;
             statusPulseCts.Cancel();
             streamingChrome.StatusMarkdown = FeishuStreamingStatusFormatter.WithCompletedState(baseStatusMarkdown);
-            TryAttachLowInterruptionAction(streamingChrome, sessionId, tool.Id, chatId, hasStructuredTodoList, finalOutput);
+            TryAttachLowInterruptionAction(streamingChrome, sessionId, tool.Id, chatId, hasStructuredTodoList, finalOutput, recentUserContent: null);
 
             try
             {
@@ -948,15 +948,20 @@ public class FeishuCardActionService
         string toolId,
         string chatId,
         bool hasStructuredTodoList,
-        string finalOutput)
+        string finalOutput,
+        string? recentUserContent)
     {
         var normalizedToolId = NormalizeToolId(toolId) ?? toolId;
         var hasCliThreadId = !string.IsNullOrWhiteSpace(_cliExecutor.GetCliThreadId(sessionId));
         var isToolSupported = !string.IsNullOrWhiteSpace(normalizedToolId)
                               && _cliExecutor.SupportsLowInterruptionContinue(normalizedToolId);
+        var sessionContents = _chatSessionService.GetMessages(sessionId)
+            .Select(static message => message.Content)
+            .Append(recentUserContent);
 
         if (!LowInterruptionContinueHelper.IsEligible(
                 finalOutput,
+                sessionContents,
                 hasStructuredTodoList,
                 isToolSupported,
                 hasCliThreadId,

@@ -238,10 +238,9 @@ public class FeishuCardKitClientTests
         var elements = cardDoc.RootElement.GetProperty("body").GetProperty("elements");
         var bottomActionModule = elements.EnumerateArray().Last();
 
-        Assert.Equal("action", bottomActionModule.GetProperty("tag").GetString());
-        Assert.Equal("flow", bottomActionModule.GetProperty("layout").GetString());
+        Assert.Equal("column_set", bottomActionModule.GetProperty("tag").GetString());
 
-        var button = bottomActionModule.GetProperty("actions")[0];
+        var button = bottomActionModule.GetProperty("columns")[0].GetProperty("elements")[0];
         Assert.Equal("button", button.GetProperty("tag").GetString());
         Assert.Equal("primary", button.GetProperty("type").GetString());
         Assert.Equal("少打断执行", button.GetProperty("text").GetProperty("content").GetString());

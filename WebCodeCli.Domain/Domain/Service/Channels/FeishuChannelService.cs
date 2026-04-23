@@ -777,7 +777,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             activeExecution.SetLatestRenderedContent(finalOutput);
             activeExecution.CancelPulse();
             activeExecution.SetCompletedStatus();
-            TryAttachLowInterruptionAction(activeExecution.Chrome, sessionId, tool.Id, hasStructuredTodoList, finalOutput);
+            TryAttachLowInterruptionAction(activeExecution.Chrome, sessionId, tool.Id, hasStructuredTodoList, finalOutput, userPrompt);
             // NOTE: Keep the explicit completion text notification for Feishu users.
             try
             {
@@ -1025,12 +1025,16 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
         string sessionId,
         string toolId,
         bool hasStructuredTodoList,
-        string finalOutput)
+        string finalOutput,
+        string? recentUserContent)
     {
         var normalizedToolId = NormalizeToolId(toolId) ?? toolId;
         var hasCliThreadId = !string.IsNullOrWhiteSpace(_cliExecutor.GetCliThreadId(sessionId));
         var isToolSupported = !string.IsNullOrWhiteSpace(normalizedToolId)
                               && _cliExecutor.SupportsLowInterruptionContinue(normalizedToolId);
+        var sessionContents = _chatSessionService.GetMessages(sessionId)
+            .Select(static message => message.Content)
+            .Append(recentUserContent);
 
         string? chatKey = null;
         using (var scope = _serviceProvider.CreateScope())
@@ -1043,6 +1047,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
         if (string.IsNullOrWhiteSpace(chatKey)
             || !LowInterruptionContinueHelper.IsEligible(
                 finalOutput,
+                sessionContents,
                 hasStructuredTodoList,
                 isToolSupported,
                 hasCliThreadId,

@@ -474,9 +474,10 @@ public class FeishuCardKitClient : IFeishuCardKitClient
             elements.Add(new { tag = "hr" });
             elements.Add(new
             {
-                tag = "action",
-                layout = "flow",
-                actions = BuildBottomActions(chrome.BottomActions)
+                tag = "column_set",
+                flex_mode = "none",
+                horizontal_spacing = "8px",
+                columns = BuildBottomActionColumns(chrome.BottomActions)
             });
         }
 
@@ -499,25 +500,34 @@ public class FeishuCardKitClient : IFeishuCardKitClient
             .ToArray();
     }
 
-    private object[] BuildBottomActions(IEnumerable<FeishuStreamingCardBottomAction> actions)
+    private object[] BuildBottomActionColumns(IEnumerable<FeishuStreamingCardBottomAction> actions)
     {
         return actions
             .Where(action => !string.IsNullOrWhiteSpace(action.Text))
             .Select(action => (object)new
             {
-                tag = "button",
-                text = new
-                {
-                    tag = "plain_text",
-                    content = action.Text
-                },
-                type = string.IsNullOrWhiteSpace(action.Type) ? "default" : action.Type,
-                behaviors = new[]
+                tag = "column",
+                width = "weighted",
+                weight = 1,
+                elements = new object[]
                 {
                     new
                     {
-                        type = "callback",
-                        value = action.Value
+                        tag = "button",
+                        text = new
+                        {
+                            tag = "plain_text",
+                            content = action.Text
+                        },
+                        type = string.IsNullOrWhiteSpace(action.Type) ? "default" : action.Type,
+                        behaviors = new[]
+                        {
+                            new
+                            {
+                                type = "callback",
+                                value = action.Value
+                            }
+                        }
                     }
                 }
             })

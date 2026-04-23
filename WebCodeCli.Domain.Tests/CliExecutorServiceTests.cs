@@ -119,7 +119,7 @@ public class CliExecutorServiceTests
 
         var arguments = adapter.BuildLowInterruptionArguments(tool, context);
 
-        Assert.Equal("exec resume --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --json --full-auto thread-123", arguments);
+        Assert.Equal("exec resume --skip-git-repo-check --json --full-auto thread-123", arguments);
         Assert.DoesNotContain("{prompt}", arguments, StringComparison.Ordinal);
         Assert.DoesNotContain("keep going", arguments, StringComparison.OrdinalIgnoreCase);
     }
@@ -330,6 +330,47 @@ public class CliExecutorServiceTests
         Assert.Equal(0, adapter.BuildArgumentsCallCount);
         Assert.Equal("thread-123", adapter.LastLowInterruptionContext?.CliThreadId);
         Assert.Contains(chunks, chunk => !chunk.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteLowInterruptionContinueStreamAsync_ForCodex_WritesContinuationPromptToStandardInput()
+    {
+        var tool = new CliToolConfig
+        {
+            Id = "codex-like-stdin",
+            Name = "Codex-like stdin",
+            Command = "powershell.exe",
+            Enabled = true
+        };
+        var adapter = new RecordingCodexLowInterruptionInputAdapter();
+
+        var service = new CliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            Options.Create(new CliToolsOption
+            {
+                TempWorkspaceRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N")),
+                Tools = [tool]
+            }),
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(adapter),
+            new StubCcSwitchService());
+
+        service.SetCliThreadId("session-low-interruption-stdin", "thread-stdin");
+
+        var chunks = new List<StreamOutputChunk>();
+        await foreach (var chunk in service.ExecuteLowInterruptionContinueStreamAsync("session-low-interruption-stdin", tool.Id))
+        {
+            chunks.Add(chunk);
+        }
+
+        Assert.Contains(
+            chunks,
+            chunk => string.Equals(
+                chunk.Content?.Trim(),
+                "Continue the existing session thread-stdin and keep executing the current task.",
+                StringComparison.Ordinal));
     }
 
     [Fact]
@@ -2014,6 +2055,34 @@ public class CliExecutorServiceTests
             LastLowInterruptionContext = context;
             return "-NoProfile -Command \"Write-Output 'low-interruption-path'\"";
         }
+
+        public CliOutputEvent? ParseOutputLine(string line) => null;
+
+        public string? ExtractSessionId(CliOutputEvent outputEvent) => null;
+
+        public string? ExtractAssistantMessage(CliOutputEvent outputEvent) => null;
+
+        public string GetEventTitle(CliOutputEvent outputEvent) => outputEvent.Title ?? string.Empty;
+
+        public string GetEventBadgeClass(CliOutputEvent outputEvent) => string.Empty;
+
+        public string GetEventBadgeLabel(CliOutputEvent outputEvent) => string.Empty;
+    }
+
+    private sealed class RecordingCodexLowInterruptionInputAdapter : ICliToolAdapter
+    {
+        public string[] SupportedToolIds => ["codex"];
+
+        public bool SupportsStreamParsing => false;
+
+        public bool CanHandle(CliToolConfig tool)
+            => string.Equals(tool.Id, "codex-like-stdin", StringComparison.OrdinalIgnoreCase);
+
+        public string BuildArguments(CliToolConfig tool, string prompt, CliSessionContext context)
+            => throw new NotSupportedException();
+
+        public string BuildLowInterruptionArguments(CliToolConfig tool, CliSessionContext context)
+            => "-NoProfile -Command \"$inputText = [Console]::In.ReadToEnd(); Write-Output $inputText\"";
 
         public CliOutputEvent? ParseOutputLine(string line) => null;
 

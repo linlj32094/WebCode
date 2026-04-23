@@ -23,6 +23,7 @@ internal static partial class LowInterruptionContinueHelper
 
     public static bool IsEligible(
         string? content,
+        IEnumerable<string?>? sessionContents,
         bool hasStructuredTodoList,
         bool isToolSupported,
         bool hasCliThreadId,
@@ -31,7 +32,9 @@ internal static partial class LowInterruptionContinueHelper
         return isToolSupported
                && hasCliThreadId
                && !isProcessRunning
-               && (hasStructuredTodoList || HasPlainTextSignal(content));
+               && (hasStructuredTodoList
+                   || HasPlainTextSignal(content)
+                   || SessionContainsPlainTextSignal(sessionContents));
     }
 
     public static FeishuStreamingCardBottomAction CreateBottomAction(string sessionId, string chatKey, string toolId)
@@ -50,6 +53,11 @@ internal static partial class LowInterruptionContinueHelper
         };
     }
 
-    [GeneratedRegex(@"\b(plan|backlog)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static bool SessionContainsPlainTextSignal(IEnumerable<string?>? sessionContents)
+    {
+        return sessionContents != null && sessionContents.Any(HasPlainTextSignal);
+    }
+
+    [GeneratedRegex(@"\b(plan|backlog|task|todo)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlainTextSignalRegex();
 }

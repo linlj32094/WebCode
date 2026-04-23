@@ -28,7 +28,7 @@ public static partial class LowInterruptionContinueHelper
             return LowInterruptionContinueEligibility.Hidden;
         }
 
-        var hasUnfinishedWork = hasStructuredTodoList || ContainsPlainTextSignal(latestCompletedAssistant.Content);
+        var hasUnfinishedWork = hasStructuredTodoList || SessionContainsPlainTextSignal(messages);
         if (!hasUnfinishedWork)
         {
             return LowInterruptionContinueEligibility.Hidden;
@@ -63,7 +63,12 @@ public static partial class LowInterruptionContinueHelper
         return PlainTextSignalRegex().IsMatch(content);
     }
 
-    [GeneratedRegex(@"\b(plan|backlog)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static bool SessionContainsPlainTextSignal(IReadOnlyList<ChatMessage> messages)
+    {
+        return messages.Any(message => message != null && ContainsPlainTextSignal(message.Content));
+    }
+
+    [GeneratedRegex(@"\b(plan|backlog|task|todo)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlainTextSignalRegex();
 }
 
