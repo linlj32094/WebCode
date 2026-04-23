@@ -274,7 +274,10 @@ public class CliExecutorService : ICliExecutorService
         }
     }
 
-    public async Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+    public async Task ResetSessionRuntimeAsync(
+        string sessionId,
+        bool clearCliThreadId = true,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
         {
@@ -287,7 +290,10 @@ public class CliExecutorService : ICliExecutorService
 
         lock (_cliSessionLock)
         {
-            _cliThreadIds.Remove(sessionId);
+            if (clearCliThreadId)
+            {
+                _cliThreadIds.Remove(sessionId);
+            }
         }
 
         try
@@ -295,13 +301,13 @@ public class CliExecutorService : ICliExecutorService
             using var scope = _serviceProvider.CreateScope();
 
             var sessionRepository = scope.ServiceProvider.GetService<IChatSessionRepository>();
-            if (sessionRepository != null)
+            if (sessionRepository != null && clearCliThreadId)
             {
                 await sessionRepository.UpdateCliThreadIdAsync(sessionId, null);
             }
 
             var sessionOutputService = scope.ServiceProvider.GetService<ISessionOutputService>();
-            if (sessionOutputService != null)
+            if (sessionOutputService != null && clearCliThreadId)
             {
                 var outputState = await sessionOutputService.GetBySessionIdAsync(sessionId);
                 if (outputState != null && !string.IsNullOrWhiteSpace(outputState.ActiveThreadId))

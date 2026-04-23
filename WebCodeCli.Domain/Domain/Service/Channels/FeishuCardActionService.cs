@@ -3165,7 +3165,7 @@ public class FeishuCardActionService
                 return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 保存模型设置失败，请稍后重试", "error");
             }
 
-            await _cliExecutor.ResetSessionRuntimeAsync(sessionId);
+            await _cliExecutor.ResetSessionRuntimeAsync(sessionId, clearCliThreadId: false);
 
             var card = await BuildSessionManagerCardAsync(actualChatKey, operatorUserId, username, showAllSessions);
             return _cardBuilder.BuildCardActionResponseV2(

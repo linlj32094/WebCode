@@ -553,7 +553,7 @@ public class FeishuCardActionServiceTests
         Assert.Equal(CardActionTriggerResponseDto.ToastSuffix.ToastType.Success, response.Toast?.Type);
         Assert.Contains("已保存该会话的启动设置", response.Toast?.Content);
         Assert.Single(cliExecutor.ResetRequests);
-        Assert.Equal(sessionId, cliExecutor.ResetRequests[0]);
+        Assert.Equal((sessionId, false), cliExecutor.ResetRequests[0]);
 
         var updatedSession = await sessionRepository.GetByIdAndUsernameAsync(sessionId, "luhaiyan");
         Assert.NotNull(updatedSession);
@@ -615,7 +615,7 @@ public class FeishuCardActionServiceTests
 
         Assert.Equal(CardActionTriggerResponseDto.ToastSuffix.ToastType.Success, response.Toast?.Type);
         Assert.Single(cliExecutor.ResetRequests);
-        Assert.Equal(sessionId, cliExecutor.ResetRequests[0]);
+        Assert.Equal((sessionId, false), cliExecutor.ResetRequests[0]);
 
         var updatedSession = await sessionRepository.GetByIdAndUsernameAsync(sessionId, "luhaiyan");
         Assert.NotNull(updatedSession);
@@ -679,7 +679,7 @@ public class FeishuCardActionServiceTests
 
         Assert.Equal(CardActionTriggerResponseDto.ToastSuffix.ToastType.Success, response.Toast?.Type);
         Assert.Single(cliExecutor.ResetRequests);
-        Assert.Equal(sessionId, cliExecutor.ResetRequests[0]);
+        Assert.Equal((sessionId, false), cliExecutor.ResetRequests[0]);
 
         var updatedSession = await sessionRepository.GetByIdAndUsernameAsync(sessionId, "luhaiyan");
         Assert.NotNull(updatedSession);
@@ -740,7 +740,7 @@ public class FeishuCardActionServiceTests
         Assert.Equal(CardActionTriggerResponseDto.ToastSuffix.ToastType.Success, response.Toast?.Type);
         Assert.Contains("已清除该会话的启动覆盖", response.Toast?.Content);
         Assert.Single(cliExecutor.ResetRequests);
-        Assert.Equal(sessionId, cliExecutor.ResetRequests[0]);
+        Assert.Equal((sessionId, false), cliExecutor.ResetRequests[0]);
 
         var updatedSession = await sessionRepository.GetByIdAndUsernameAsync(sessionId, "luhaiyan");
         Assert.NotNull(updatedSession);
@@ -1935,7 +1935,7 @@ public class FeishuCardActionServiceTests
 
         public List<(string SessionId, string? ToolId)> SyncRequests { get; } = new();
 
-        public List<string> ResetRequests { get; } = new();
+        public List<(string SessionId, bool ClearCliThreadId)> ResetRequests { get; } = new();
 
         public void SetSessionWorkspacePath(string sessionId, string workspacePath)
         {
@@ -1970,10 +1970,16 @@ public class FeishuCardActionServiceTests
             _cliThreadIds[sessionId] = threadId;
         }
 
-        public Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+        public Task ResetSessionRuntimeAsync(
+            string sessionId,
+            bool clearCliThreadId = true,
+            CancellationToken cancellationToken = default)
         {
-            ResetRequests.Add(sessionId);
-            _cliThreadIds.Remove(sessionId);
+            ResetRequests.Add((sessionId, clearCliThreadId));
+            if (clearCliThreadId)
+            {
+                _cliThreadIds.Remove(sessionId);
+            }
             return Task.CompletedTask;
         }
 

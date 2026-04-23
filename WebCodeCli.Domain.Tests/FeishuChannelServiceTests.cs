@@ -1084,9 +1084,15 @@ public class FeishuChannelServiceTests
             }
         }
 
-        public Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+        public Task ResetSessionRuntimeAsync(
+            string sessionId,
+            bool clearCliThreadId = true,
+            CancellationToken cancellationToken = default)
         {
-            _cliThreadIds.Remove(sessionId);
+            if (clearCliThreadId)
+            {
+                _cliThreadIds.Remove(sessionId);
+            }
             return Task.CompletedTask;
         }
 
@@ -1258,7 +1264,10 @@ public class FeishuChannelServiceTests
         {
         }
 
-        public Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+        public Task ResetSessionRuntimeAsync(
+            string sessionId,
+            bool clearCliThreadId = true,
+            CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
         public async IAsyncEnumerable<StreamOutputChunk> ExecuteStreamAsync(

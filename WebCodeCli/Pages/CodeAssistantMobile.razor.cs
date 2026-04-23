@@ -2420,12 +2420,10 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
                 clearOverride ? null : _sessionLaunchReasoningEffort);
 
             await SessionHistoryManager.SaveSessionImmediateAsync(session);
-            await CliExecutorService.ResetSessionRuntimeAsync(session.SessionId);
+            await CliExecutorService.ResetSessionRuntimeAsync(session.SessionId, clearCliThreadId: false);
 
             if (_currentSession?.SessionId == session.SessionId)
             {
-                _currentSession.CliThreadId = null;
-                _activeThreadId = string.Empty;
                 await SaveOutputStateAsync();
             }
 
@@ -2438,7 +2436,6 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
                 _currentSession.ToolLaunchOverrides = new Dictionary<string, SessionToolLaunchOverride>(
                     refreshedSession.ToolLaunchOverrides,
                     StringComparer.OrdinalIgnoreCase);
-                _currentSession.CliThreadId = null;
             }
 
             CloseSessionLaunchOverrideDialog();

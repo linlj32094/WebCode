@@ -46,7 +46,10 @@ public interface ICliExecutorService
     /// <summary>
     /// 仅重置当前会话运行态，不删除工作区和历史消息
     /// </summary>
-    Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default);
+    Task ResetSessionRuntimeAsync(
+        string sessionId,
+        bool clearCliThreadId = true,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 执行 CLI 命令并返回流式输出
