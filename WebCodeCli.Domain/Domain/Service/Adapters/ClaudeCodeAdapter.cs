@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using WebCodeCli.Domain.Domain.Model;
 
 namespace WebCodeCli.Domain.Domain.Service.Adapters;
@@ -16,6 +17,10 @@ namespace WebCodeCli.Domain.Domain.Service.Adapters;
 /// </summary>
 public class ClaudeCodeAdapter : ICliToolAdapter
 {
+    private static readonly Regex ModelArgumentRegex = new(
+        "(?<!\\S)--model\\s+(?:\"[^\"]*\"|'[^']*'|\\S+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     /// <summary>
     /// 默认参数模板
     /// 支持的占位符:
@@ -67,7 +72,7 @@ public class ClaudeCodeAdapter : ICliToolAdapter
             result = result.Replace("  ", " ");
         }
 
-        return result;
+        return UpsertModelArgument(result, context.LaunchModelOverride);
     }
 
     public string BuildLowInterruptionArguments(CliToolConfig tool, CliSessionContext context)
@@ -1054,6 +1059,18 @@ public class ClaudeCodeAdapter : ICliToolAdapter
         }
 
         return normalized;
+    }
+
+    private static string UpsertModelArgument(string arguments, string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return NormalizeArguments(arguments);
+        }
+
+        var cleanedArguments = ModelArgumentRegex.Replace(arguments, string.Empty);
+        var modelArgument = $"--model \"{EscapeShellArgument(model)}\"";
+        return NormalizeArguments($"{cleanedArguments} {modelArgument}");
     }
 
     #endregion

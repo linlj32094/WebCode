@@ -981,7 +981,9 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             ?? "当前会话";
         var sessionLabel = GetSessionDisplayLabel(currentSession);
         var toolLabel = GetToolDisplayName(currentSession?.ToolId);
-        var baseStatusMarkdown = $"当前会话：**{workspaceName}** · {sessionLabel} · {toolLabel}";
+        var baseStatusMarkdown = BuildSessionStatusMarkdown(
+            $"当前会话：**{workspaceName}** · {sessionLabel} · {toolLabel}",
+            currentSession);
 
         var chrome = new FeishuStreamingCardChrome
         {
@@ -1128,7 +1130,9 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             ?? "当前会话";
         var sessionLabel = GetSessionDisplayLabel(session);
 
-        return $"当前会话：{workspaceName}  {sessionLabel}\n已完成";
+        return BuildSessionStatusMarkdown(
+            $"当前会话：{workspaceName}  {sessionLabel}\n已完成",
+            session);
     }
 
     private static string GetSessionDisplayLabel(ChatSessionEntity? session)
@@ -1159,6 +1163,54 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             "opencode" => "OpenCode",
             _ => "未设置"
         };
+    }
+
+    private static string BuildSessionStatusMarkdown(string baseMarkdown, ChatSessionEntity? session)
+    {
+        var launchOverrideSummary = BuildSessionLaunchOverrideSummary(session);
+        return string.IsNullOrWhiteSpace(launchOverrideSummary)
+            ? baseMarkdown
+            : $"{baseMarkdown}\n{launchOverrideSummary}";
+    }
+
+    private static string? BuildSessionLaunchOverrideSummary(ChatSessionEntity? session)
+    {
+        if (session == null)
+        {
+            return null;
+        }
+
+        var effectiveToolId = SessionLaunchOverrideHelper.ResolveEffectiveToolId(
+            session.ToolId,
+            session.CcSwitchSnapshotToolId);
+        if (!SessionLaunchOverrideHelper.SupportsLaunchOverrides(effectiveToolId))
+        {
+            return null;
+        }
+
+        var launchOverride = SessionLaunchOverrideHelper.GetEffectiveOverride(
+            SessionLaunchOverrideHelper.Deserialize(session.ToolLaunchOverridesJson),
+            effectiveToolId,
+            session.ToolId,
+            session.CcSwitchSnapshotToolId);
+        if (launchOverride == null)
+        {
+            return null;
+        }
+
+        var summaryLines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(launchOverride.Model))
+        {
+            summaryLines.Add($"🤖 模型: `{launchOverride.Model}`");
+        }
+
+        if (string.Equals(effectiveToolId, "codex", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(launchOverride.ReasoningEffort))
+        {
+            summaryLines.Add($"🧠 思考: `{launchOverride.ReasoningEffort}`");
+        }
+
+        return summaryLines.Count == 0 ? null : string.Join("\n", summaryLines);
     }
 
     private string? TryGetSessionWorkspaceDirectoryName(string sessionId)

@@ -346,6 +346,84 @@ public class FeishuChannelServiceTests
     }
 
     [Fact]
+    public async Task HandleIncomingMessageAsync_IncludesSessionLaunchOverridesInStatusChromeAndCompletionText()
+    {
+        var repository = CreateRepository(out var repositoryProxy);
+        var sessionDirectoryService = new RecordingSessionDirectoryService(repositoryProxy);
+        var cardKit = new StreamingRecordingFeishuCardKitClient();
+        var chatSessionService = new RecordingChatSessionService();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-streaming-overrides-{Guid.NewGuid():N}");
+        var currentWorkspace = Path.Combine(workspaceRoot, "superpowers");
+        Directory.CreateDirectory(currentWorkspace);
+
+        repositoryProxy.Store(new ChatSessionEntity
+        {
+            SessionId = "11111111-current",
+            Username = "luhaiyan",
+            Title = "MMIS-Server*",
+            WorkspacePath = currentWorkspace,
+            ToolId = "codex",
+            ToolLaunchOverridesJson = SessionLaunchOverrideHelper.Serialize(
+                new Dictionary<string, SessionToolLaunchOverride>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["codex"] = new SessionToolLaunchOverride
+                    {
+                        Model = "gpt-5.4",
+                        ReasoningEffort = "high"
+                    }
+                }),
+            FeishuChatKey = "oc_override_chat",
+            IsFeishuActive = true,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-30),
+            UpdatedAt = DateTime.UtcNow
+        });
+
+        var cliExecutor = new PromptCapturingCliExecutor(currentWorkspace);
+        var serviceProvider = new TestServiceProvider(
+            repository,
+            sessionDirectoryService,
+            new StubFeishuUserBindingService(),
+            new StubUserFeishuBotConfigService(),
+            new StubUserContextService());
+
+        var service = new FeishuChannelService(
+            Options.Create(new FeishuOptions
+            {
+                Enabled = true,
+                AppId = "cli_test",
+                AppSecret = "secret"
+            }),
+            NullLogger<FeishuChannelService>.Instance,
+            cardKit,
+            serviceProvider,
+            cliExecutor,
+            chatSessionService);
+
+        try
+        {
+            await service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_override_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-override",
+                Content = "继续处理"
+            });
+
+            var handle = Assert.Single(cardKit.Handles);
+            Assert.Contains("🤖 模型: `gpt-5.4`", handle.InitialStatusMarkdown);
+            Assert.Contains("🧠 思考: `high`", handle.InitialStatusMarkdown);
+            Assert.Contains("🤖 模型: `gpt-5.4`", handle.FinalStatusMarkdown);
+            Assert.Contains("🧠 思考: `high`", handle.FinalStatusMarkdown);
+            Assert.Contains("🤖 模型: `gpt-5.4`", cardKit.LastReplyTextContent);
+            Assert.Contains("🧠 思考: `high`", cardKit.LastReplyTextContent);
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HandleIncomingMessageAsync_WithSessionOverflowMenu_SuppressesPulseWithinQuietWindow()
     {
         var repository = CreateRepository(out var repositoryProxy);
@@ -1006,6 +1084,12 @@ public class FeishuChannelServiceTests
             }
         }
 
+        public Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+        {
+            _cliThreadIds.Remove(sessionId);
+            return Task.CompletedTask;
+        }
+
         public async IAsyncEnumerable<StreamOutputChunk> ExecuteStreamAsync(
             string sessionId,
             string toolId,
@@ -1173,6 +1257,9 @@ public class FeishuChannelServiceTests
         public void SetCliThreadId(string sessionId, string threadId)
         {
         }
+
+        public Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
 
         public async IAsyncEnumerable<StreamOutputChunk> ExecuteStreamAsync(
             string sessionId,
@@ -1471,7 +1558,17 @@ public class FeishuChannelServiceTests
                 ProjectId = session.ProjectId,
                 FeishuChatKey = session.FeishuChatKey,
                 IsFeishuActive = session.IsFeishuActive,
-                IsCustomWorkspace = session.IsCustomWorkspace
+                IsCustomWorkspace = session.IsCustomWorkspace,
+                CliThreadId = session.CliThreadId,
+                ToolLaunchOverridesJson = session.ToolLaunchOverridesJson,
+                UsesCcSwitchSnapshot = session.UsesCcSwitchSnapshot,
+                CcSwitchSnapshotToolId = session.CcSwitchSnapshotToolId,
+                CcSwitchProviderId = session.CcSwitchProviderId,
+                CcSwitchProviderName = session.CcSwitchProviderName,
+                CcSwitchProviderCategory = session.CcSwitchProviderCategory,
+                CcSwitchLiveConfigPath = session.CcSwitchLiveConfigPath,
+                CcSwitchSnapshotRelativePath = session.CcSwitchSnapshotRelativePath,
+                CcSwitchSnapshotSyncedAt = session.CcSwitchSnapshotSyncedAt
             };
         }
     }

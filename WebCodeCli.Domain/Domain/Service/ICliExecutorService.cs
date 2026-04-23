@@ -44,6 +44,11 @@ public interface ICliExecutorService
     void SetCliThreadId(string sessionId, string threadId);
 
     /// <summary>
+    /// 仅重置当前会话运行态，不删除工作区和历史消息
+    /// </summary>
+    Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 执行 CLI 命令并返回流式输出
     /// </summary>
     /// <param name="sessionId">会话ID,用于创建独立工作区</param>

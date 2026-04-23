@@ -125,6 +125,58 @@ public class CliExecutorServiceTests
     }
 
     [Fact]
+    public void ClaudeCodeAdapter_BuildArguments_ReplacesModelArgumentWithSessionOverride()
+    {
+        var adapter = new ClaudeCodeAdapter();
+        var tool = new CliToolConfig
+        {
+            Id = "claude-code",
+            Name = "Claude Code",
+            Command = "claude",
+            ArgumentTemplate = "-p --model old-model {session} \"{prompt}\"",
+            Enabled = true
+        };
+        var context = new CliSessionContext
+        {
+            SessionId = "session-claude-model",
+            WorkingDirectory = Path.GetTempPath(),
+            LaunchModelOverride = "claude-sonnet-4"
+        };
+
+        var arguments = adapter.BuildArguments(tool, "hello", context);
+
+        Assert.Contains("--model \"claude-sonnet-4\"", arguments, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-model", arguments, StringComparison.Ordinal);
+        Assert.Equal(1, arguments.Split("--model", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void OpenCodeAdapter_BuildArguments_ReplacesModelArgumentWithSessionOverride()
+    {
+        var adapter = new OpenCodeAdapter();
+        var tool = new CliToolConfig
+        {
+            Id = "opencode",
+            Name = "OpenCode",
+            Command = "opencode",
+            ArgumentTemplate = "run --model old/provider-model {session} \"{prompt}\" --format json",
+            Enabled = true
+        };
+        var context = new CliSessionContext
+        {
+            SessionId = "session-opencode-model",
+            WorkingDirectory = Path.GetTempPath(),
+            LaunchModelOverride = "openai/gpt-5.4"
+        };
+
+        var arguments = adapter.BuildArguments(tool, "hello", context);
+
+        Assert.Contains("--model \"openai/gpt-5.4\"", arguments, StringComparison.Ordinal);
+        Assert.DoesNotContain("old/provider-model", arguments, StringComparison.Ordinal);
+        Assert.Equal(1, arguments.Split("--model", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public void SupportsLowInterruptionContinue_WhenAdapterProvidesNativeDefaults_ReturnsTrue()
     {
         var tool = new CliToolConfig
@@ -278,6 +330,150 @@ public class CliExecutorServiceTests
         Assert.Equal(0, adapter.BuildArgumentsCallCount);
         Assert.Equal("thread-123", adapter.LastLowInterruptionContext?.CliThreadId);
         Assert.Contains(chunks, chunk => !chunk.IsError);
+    }
+
+    [Fact]
+    public async Task ResetSessionRuntimeAsync_ClearsCachedAndPersistedThreadIdsWithoutRemovingWorkspace()
+    {
+        const string sessionId = "session-reset-runtime";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, sessionId);
+        var keepFilePath = Path.Combine(workspacePath, "keep.txt");
+        Directory.CreateDirectory(workspacePath);
+        await File.WriteAllTextAsync(keepFilePath, "keep");
+
+        try
+        {
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CliThreadId = "thread-123",
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+            var sessionOutputService = new StubSessionOutputService
+            {
+                State = new OutputPanelState
+                {
+                    SessionId = sessionId,
+                    ActiveThreadId = "thread-123"
+                }
+            };
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = []
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, sessionOutputService),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService());
+
+            service.SetCliThreadId(sessionId, "thread-123");
+
+            await service.ResetSessionRuntimeAsync(sessionId);
+
+            Assert.Null(service.GetCliThreadId(sessionId));
+            Assert.Null(repository.GetById(sessionId).CliThreadId);
+            Assert.Null(repository.LastUpdatedCliThreadId);
+            Assert.Equal(string.Empty, sessionOutputService.State?.ActiveThreadId);
+            Assert.Equal(1, sessionOutputService.SaveCallCount);
+            Assert.True(File.Exists(keepFilePath));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ResetSessionRuntimeAsync_CleansUpOnlyTargetSessionPersistentProcess()
+    {
+        const string sessionA = "session-reset-a";
+        const string sessionB = "session-reset-b";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+
+        var tool = new CliToolConfig
+        {
+            Id = "persistent-reset-tool",
+            Name = "Persistent Reset Tool",
+            Command = "powershell.exe",
+            PersistentModeArguments = "-NoProfile -Command \"$line = [Console]::In.ReadLine(); Write-Output 'persisted-ready'; Start-Sleep -Seconds 30\"",
+            UsePersistentProcess = true,
+            TimeoutSeconds = 6,
+            Enabled = true
+        };
+
+        var service = new CliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            Options.Create(new CliToolsOption
+            {
+                TempWorkspaceRoot = tempRoot,
+                Tools = [tool]
+            }),
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(),
+            new StubCcSwitchService());
+
+        try
+        {
+            var sessionAChunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionA, tool.Id, "hello-a"))
+            {
+                sessionAChunks.Add(chunk);
+            }
+
+            var sessionBChunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionB, tool.Id, "hello-b"))
+            {
+                sessionBChunks.Add(chunk);
+            }
+
+            Assert.Contains(sessionAChunks, chunk => chunk.Content.Contains("persisted-ready", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(sessionBChunks, chunk => chunk.Content.Contains("persisted-ready", StringComparison.OrdinalIgnoreCase));
+
+            var processManager = typeof(CliExecutorService)
+                .GetField("_processManager", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(service)!;
+            var processMap = typeof(PersistentProcessManager)
+                .GetField("_processes", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(processManager)!;
+
+            Assert.Equal(2, (int)processMap.GetType().GetProperty("Count")!.GetValue(processMap)!);
+
+            await service.ResetSessionRuntimeAsync(sessionA);
+
+            Assert.Equal(1, (int)processMap.GetType().GetProperty("Count")!.GetValue(processMap)!);
+
+            var remainingKeys = (IEnumerable<string>)processMap.GetType().GetProperty("Keys")!.GetValue(processMap)!;
+            Assert.Single(remainingKeys);
+            Assert.Contains(sessionB, remainingKeys.Single(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            service.CleanupSessionWorkspace(sessionA);
+            service.CleanupSessionWorkspace(sessionB);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -1057,6 +1253,80 @@ public class CliExecutorServiceTests
     }
 
     [Fact]
+    public async Task SyncSessionCcSwitchSnapshotAsync_PreservesStoredLaunchOverrides()
+    {
+        const string sessionId = "session-sync-preserve-overrides";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        const string liveConfigContent = "provider = \"provider-a\"\n";
+        var overrideJson = SessionLaunchOverrideHelper.Serialize(new Dictionary<string, SessionToolLaunchOverride>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["codex"] = new() { Model = "gpt-5.4", ReasoningEffort = "high" }
+        });
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+
+        try
+        {
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    ToolLaunchOverridesJson = overrideJson,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = []
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["codex"] = new()
+                    {
+                        ToolId = "codex",
+                        ToolName = "Codex",
+                        IsManaged = true,
+                        IsLaunchReady = true,
+                        ActiveProviderId = "provider-a",
+                        ActiveProviderName = "Provider A",
+                        ActiveProviderCategory = "custom",
+                        LiveConfigPath = liveConfigPath,
+                        StatusMessage = "Codex 已由 cc-switch 管理并可直接启动。"
+                    }
+                }));
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            Assert.Equal(overrideJson, repository.GetById(sessionId).ToolLaunchOverridesJson);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ExecuteStreamAsync_WhenManagedSessionHasPinnedSnapshot_ContinuesUsingPinnedProvider()
     {
         const string sessionId = "session-pinned-snapshot";
@@ -1129,6 +1399,110 @@ public class CliExecutorServiceTests
 
             Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
             Assert.Contains(chunks, c => c.Content.Contains("pinned-ok", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenManagedCodexSessionHasLaunchOverride_PatchesAndRestoresSnapshotConfig()
+    {
+        const string sessionId = "session-managed-codex-launch-override";
+        const string baseConfigContent = "provider = \"provider-a\"\nmodel = \"provider-default\"\nmodel_reasoning_effort = \"medium\"\n";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var snapshotPath = Path.Combine(workspacePath, ".codex", "config.toml");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshotPath)!);
+        await File.WriteAllTextAsync(snapshotPath, baseConfigContent);
+
+        try
+        {
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    UsesCcSwitchSnapshot = true,
+                    CcSwitchSnapshotToolId = "codex",
+                    CcSwitchProviderId = "provider-a",
+                    CcSwitchProviderName = "Provider A",
+                    CcSwitchSnapshotRelativePath = Path.Combine(".codex", "config.toml"),
+                    CcSwitchSnapshotSyncedAt = DateTime.Now,
+                    ToolLaunchOverridesJson = SessionLaunchOverrideHelper.Serialize(new Dictionary<string, SessionToolLaunchOverride>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["codex"] = new() { Model = "gpt-5.4", ReasoningEffort = "high" }
+                    }),
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var tool = new CliToolConfig
+            {
+                Id = "codex",
+                Name = "Codex",
+                Command = "powershell.exe",
+                ArgumentTemplate = "-NoProfile -Command \"Write-Output 'override-ok'\"",
+                TimeoutSeconds = 10,
+                Enabled = true
+            };
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = [tool]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["codex"] = new()
+                    {
+                        ToolId = "codex",
+                        ToolName = "Codex",
+                        IsManaged = true,
+                        IsLaunchReady = false,
+                        StatusMessage = "Codex 当前未在 cc-switch 中激活 Provider。"
+                    }
+                }));
+
+            var firstRunChunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, tool.Id, "ignored"))
+            {
+                firstRunChunks.Add(chunk);
+            }
+
+            Assert.Contains(firstRunChunks, c => c.Content.Contains("override-ok", StringComparison.OrdinalIgnoreCase));
+
+            var overriddenConfig = await File.ReadAllTextAsync(snapshotPath);
+            Assert.Contains("provider = \"provider-a\"", overriddenConfig, StringComparison.Ordinal);
+            Assert.Contains("model = \"gpt-5.4\"", overriddenConfig, StringComparison.Ordinal);
+            Assert.Contains("model_reasoning_effort = \"high\"", overriddenConfig, StringComparison.Ordinal);
+
+            repository.GetById(sessionId).ToolLaunchOverridesJson = null;
+            await service.ResetSessionRuntimeAsync(sessionId);
+
+            var secondRunChunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, tool.Id, "ignored"))
+            {
+                secondRunChunks.Add(chunk);
+            }
+
+            Assert.Contains(secondRunChunks, c => c.Content.Contains("override-ok", StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(baseConfigContent, await File.ReadAllTextAsync(snapshotPath));
         }
         finally
         {
@@ -1656,14 +2030,23 @@ public class CliExecutorServiceTests
 
     private sealed class StubSessionOutputService : ISessionOutputService
     {
+        public OutputPanelState? State { get; set; }
+
+        public int SaveCallCount { get; private set; }
+
         public Task<OutputPanelState?> GetBySessionIdAsync(string sessionId)
-            => Task.FromResult<OutputPanelState?>(new OutputPanelState
+            => Task.FromResult(State ?? new OutputPanelState
             {
                 SessionId = sessionId,
                 ActiveThreadId = string.Empty
             });
 
-        public Task<bool> SaveAsync(OutputPanelState state) => Task.FromResult(true);
+        public Task<bool> SaveAsync(OutputPanelState state)
+        {
+            SaveCallCount++;
+            State = state;
+            return Task.FromResult(true);
+        }
 
         public Task<bool> DeleteBySessionIdAsync(string sessionId) => Task.FromResult(true);
     }
@@ -1671,10 +2054,14 @@ public class CliExecutorServiceTests
     private sealed class StubCcSwitchService : ICcSwitchService
     {
         private readonly Dictionary<string, CcSwitchToolStatus> _statuses;
+        private readonly Dictionary<string, CcSwitchModelCatalog> _modelCatalogs;
 
-        public StubCcSwitchService(Dictionary<string, CcSwitchToolStatus>? statuses = null)
+        public StubCcSwitchService(
+            Dictionary<string, CcSwitchToolStatus>? statuses = null,
+            Dictionary<string, CcSwitchModelCatalog>? modelCatalogs = null)
         {
             _statuses = statuses ?? new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase);
+            _modelCatalogs = modelCatalogs ?? new Dictionary<string, CcSwitchModelCatalog>(StringComparer.OrdinalIgnoreCase);
         }
 
         public bool IsManagedTool(string toolId)
@@ -1725,9 +2112,33 @@ public class CliExecutorServiceTests
             return Task.FromResult<IReadOnlyDictionary<string, CcSwitchToolStatus>>(result);
         }
 
+        public Task<CcSwitchModelCatalog> GetModelCatalogAsync(string toolId, string? providerId = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_modelCatalogs.TryGetValue(toolId, out var catalog))
+            {
+                return Task.FromResult(CloneCatalog(catalog));
+            }
+
+            return Task.FromResult(new CcSwitchModelCatalog
+            {
+                ToolId = toolId,
+                ToolName = toolId,
+                IsManaged = IsManagedTool(toolId),
+                ProviderId = providerId,
+                StatusMessage = "ok"
+            });
+        }
+
         public void SetToolStatus(string toolId, CcSwitchToolStatus status)
         {
             _statuses[toolId] = CloneStatus(status);
+        }
+
+        public void SetModelCatalog(string toolId, CcSwitchModelCatalog catalog)
+        {
+            _modelCatalogs[toolId] = CloneCatalog(catalog);
         }
 
         private static CcSwitchToolStatus CloneStatus(CcSwitchToolStatus status)
@@ -1753,6 +2164,30 @@ public class CliExecutorServiceTests
                 ActiveProviderName = status.ActiveProviderName,
                 ActiveProviderCategory = status.ActiveProviderCategory,
                 StatusMessage = status.StatusMessage
+            };
+        }
+
+        private static CcSwitchModelCatalog CloneCatalog(CcSwitchModelCatalog catalog)
+        {
+            return new CcSwitchModelCatalog
+            {
+                ToolId = catalog.ToolId,
+                ToolName = catalog.ToolName,
+                AppType = catalog.AppType,
+                IsManaged = catalog.IsManaged,
+                IsDetected = catalog.IsDetected,
+                ProviderId = catalog.ProviderId,
+                ProviderName = catalog.ProviderName,
+                ProviderCategory = catalog.ProviderCategory,
+                IsRemoteFetched = catalog.IsRemoteFetched,
+                StatusMessage = catalog.StatusMessage,
+                Models = catalog.Models
+                    .Select(option => new CcSwitchModelOption
+                    {
+                        Id = option.Id,
+                        DisplayName = option.DisplayName
+                    })
+                    .ToList()
             };
         }
     }
@@ -1864,7 +2299,7 @@ public class CliExecutorServiceTests
         public Task<List<ChatSessionEntity>> GetByUsernameOrderByUpdatedAtAsync(string username) => Task.FromResult(_sessions.Where(x => string.Equals(x.Username, username, StringComparison.OrdinalIgnoreCase)).OrderByDescending(x => x.UpdatedAt).ToList());
         public Task<ChatSessionEntity?> GetByUsernameToolAndCliThreadIdAsync(string username, string toolId, string cliThreadId) => Task.FromResult(_sessions.FirstOrDefault(x => string.Equals(x.Username, username, StringComparison.OrdinalIgnoreCase) && string.Equals(x.ToolId, toolId, StringComparison.OrdinalIgnoreCase) && string.Equals(x.CliThreadId, cliThreadId, StringComparison.OrdinalIgnoreCase)));
         public Task<ChatSessionEntity?> GetByToolAndCliThreadIdAsync(string toolId, string cliThreadId) => Task.FromResult(_sessions.FirstOrDefault(x => string.Equals(x.ToolId, toolId, StringComparison.OrdinalIgnoreCase) && string.Equals(x.CliThreadId, cliThreadId, StringComparison.OrdinalIgnoreCase)));
-        public Task<bool> UpdateCliThreadIdAsync(string sessionId, string cliThreadId)
+        public Task<bool> UpdateCliThreadIdAsync(string sessionId, string? cliThreadId)
         {
             var session = _sessions.FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.OrdinalIgnoreCase));
             if (session == null)

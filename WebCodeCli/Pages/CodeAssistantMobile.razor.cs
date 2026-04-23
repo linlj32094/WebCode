@@ -36,6 +36,7 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     [Inject] private ISessionOutputService SessionOutputService { get; set; } = default!;
     [Inject] private ISystemSettingsService SystemSettingsService { get; set; } = default!;
     [Inject] private IUserContextService UserContextService { get; set; } = default!;
+    [Inject] private ICcSwitchService CcSwitchService { get; set; } = default!;
     [Inject] private IVersionService VersionService { get; set; } = default!;
     [Inject] private HttpClient Http { get; set; } = default!;
     [Inject] private IFrontendProjectDetector FrontendProjectDetector { get; set; } = default!;
@@ -1905,6 +1906,15 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     private bool _isRenamingSession = false;
     private string _renameError = string.Empty;
 
+    // 会话启动设置
+    private bool _showSessionLaunchOverrideDialog = false;
+    private SessionHistory? _sessionToConfigureLaunch = null;
+    private string _sessionLaunchOverrideModel = string.Empty;
+    private string _sessionLaunchReasoningEffort = string.Empty;
+    private List<CcSwitchModelOption> _sessionLaunchModelOptions = [];
+    private bool _isSavingSessionLaunchOverride = false;
+    private string _sessionLaunchOverrideError = string.Empty;
+
     // 目录授权
     private bool _showAuthorizeDialog = false;
     private SessionHistory? _sessionToAuthorize = null;
@@ -2301,6 +2311,225 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
             _syncingSessionId = string.Empty;
             StateHasChanged();
         }
+    }
+
+    private bool CurrentSessionLaunchOverrideSupportsReasoning
+        => string.Equals(
+            GetSessionLaunchOverrideToolId(_sessionToConfigureLaunch),
+            "codex",
+            StringComparison.OrdinalIgnoreCase);
+
+    private string? TryGetSessionLaunchOverrideSummary(SessionHistory session)
+    {
+        var launchOverride = SessionLaunchOverrideHelper.GetEffectiveOverride(session);
+        if (launchOverride == null)
+        {
+            return null;
+        }
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(launchOverride.Model))
+        {
+            parts.Add($"{T("codeAssistant.sessionLaunchSettingsModel")}: {launchOverride.Model}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(launchOverride.ReasoningEffort))
+        {
+            parts.Add($"{T("codeAssistant.sessionLaunchSettingsReasoning")}: {launchOverride.ReasoningEffort}");
+        }
+
+        return parts.Count == 0
+            ? null
+            : string.Join(" · ", parts);
+    }
+
+    private async Task ShowSessionLaunchOverrideDialog(SessionHistory session)
+    {
+        if (session == null)
+        {
+            return;
+        }
+
+        var toolId = GetSessionLaunchOverrideToolId(session);
+        if (string.IsNullOrWhiteSpace(toolId))
+        {
+            await JSRuntime.InvokeVoidAsync("alert", T("codeAssistant.sessionLaunchSettingsUnsupportedTool"));
+            return;
+        }
+
+        var launchOverride = SessionLaunchOverrideHelper.GetEffectiveOverride(session, toolId);
+        _sessionToConfigureLaunch = session;
+        _sessionLaunchOverrideModel = launchOverride?.Model ?? string.Empty;
+        _sessionLaunchReasoningEffort = string.Equals(toolId, "codex", StringComparison.OrdinalIgnoreCase)
+            ? launchOverride?.ReasoningEffort ?? string.Empty
+            : string.Empty;
+        _sessionLaunchModelOptions = await LoadSessionLaunchModelOptionsAsync(session, toolId, _sessionLaunchOverrideModel);
+        _sessionLaunchOverrideError = string.Empty;
+        _showSessionLaunchOverrideDialog = true;
+        StateHasChanged();
+    }
+
+    private void CloseSessionLaunchOverrideDialog()
+    {
+        _showSessionLaunchOverrideDialog = false;
+        _sessionToConfigureLaunch = null;
+        _sessionLaunchOverrideModel = string.Empty;
+        _sessionLaunchReasoningEffort = string.Empty;
+        _sessionLaunchModelOptions = [];
+        _sessionLaunchOverrideError = string.Empty;
+        _isSavingSessionLaunchOverride = false;
+        StateHasChanged();
+    }
+
+    private Task SaveSessionLaunchOverrideAsync()
+    {
+        return PersistSessionLaunchOverrideAsync(clearOverride: false);
+    }
+
+    private Task ClearSessionLaunchOverrideAsync()
+    {
+        return PersistSessionLaunchOverrideAsync(clearOverride: true);
+    }
+
+    private async Task PersistSessionLaunchOverrideAsync(bool clearOverride)
+    {
+        if (_sessionToConfigureLaunch == null || _isSavingSessionLaunchOverride)
+        {
+            return;
+        }
+
+        var toolId = GetSessionLaunchOverrideToolId(_sessionToConfigureLaunch);
+        if (string.IsNullOrWhiteSpace(toolId))
+        {
+            _sessionLaunchOverrideError = T("codeAssistant.sessionLaunchSettingsUnsupportedTool");
+            StateHasChanged();
+            return;
+        }
+
+        try
+        {
+            _isSavingSessionLaunchOverride = true;
+            _sessionLaunchOverrideError = string.Empty;
+            StateHasChanged();
+
+            var session = await SessionHistoryManager.GetSessionAsync(_sessionToConfigureLaunch.SessionId) ?? _sessionToConfigureLaunch;
+            session.ToolLaunchOverrides = SessionLaunchOverrideHelper.ApplyOverride(
+                session.ToolLaunchOverrides,
+                toolId,
+                clearOverride ? null : _sessionLaunchOverrideModel,
+                clearOverride ? null : _sessionLaunchReasoningEffort);
+
+            await SessionHistoryManager.SaveSessionImmediateAsync(session);
+            await CliExecutorService.ResetSessionRuntimeAsync(session.SessionId);
+
+            if (_currentSession?.SessionId == session.SessionId)
+            {
+                _currentSession.CliThreadId = null;
+                _activeThreadId = string.Empty;
+                await SaveOutputStateAsync();
+            }
+
+            await LoadSessions();
+
+            var refreshedSession = _sessions.FirstOrDefault(x => x.SessionId == session.SessionId) ?? session;
+            if (_currentSession?.SessionId == refreshedSession.SessionId)
+            {
+                MergeCcSwitchSnapshotState(_currentSession, refreshedSession);
+                _currentSession.ToolLaunchOverrides = new Dictionary<string, SessionToolLaunchOverride>(
+                    refreshedSession.ToolLaunchOverrides,
+                    StringComparer.OrdinalIgnoreCase);
+                _currentSession.CliThreadId = null;
+            }
+
+            CloseSessionLaunchOverrideDialog();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[移动端会话启动设置] 保存失败: {ex.Message}");
+            _sessionLaunchOverrideError = ex.Message;
+            StateHasChanged();
+        }
+        finally
+        {
+            _isSavingSessionLaunchOverride = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string? GetSessionLaunchOverrideToolId(SessionHistory? session)
+    {
+        return session == null
+            ? null
+            : SessionLaunchOverrideHelper.ResolveEffectiveToolId(session.ToolId, session.CcSwitchSnapshotToolId);
+    }
+
+    private string GetSessionLaunchOverrideToolDisplayName(SessionHistory? session)
+    {
+        var toolId = GetSessionLaunchOverrideToolId(session);
+        if (string.IsNullOrWhiteSpace(toolId))
+        {
+            return T("codeAssistant.selectTool");
+        }
+
+        return _availableTools.FirstOrDefault(tool => string.Equals(tool.Id, toolId, StringComparison.OrdinalIgnoreCase))?.Name
+               ?? toolId switch
+               {
+                   "claude-code" => "Claude Code",
+                   "codex" => "Codex",
+                   "opencode" => "OpenCode",
+                   _ => toolId
+               };
+    }
+
+    private async Task<List<CcSwitchModelOption>> LoadSessionLaunchModelOptionsAsync(SessionHistory session, string toolId, string? currentModel)
+    {
+        try
+        {
+            var catalog = await CcSwitchService.GetModelCatalogAsync(toolId, session.CcSwitchProviderId);
+            return MergeSessionLaunchModelOptions(catalog.Models, currentModel);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[移动端会话启动设置] 读取模型列表失败: {ex.Message}");
+            return MergeSessionLaunchModelOptions([], currentModel);
+        }
+    }
+
+    private static List<CcSwitchModelOption> MergeSessionLaunchModelOptions(IEnumerable<CcSwitchModelOption> options, string? currentModel)
+    {
+        var merged = new List<CcSwitchModelOption>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var option in options)
+        {
+            if (option == null || string.IsNullOrWhiteSpace(option.Id))
+            {
+                continue;
+            }
+
+            var id = option.Id.Trim();
+            if (!seen.Add(id))
+            {
+                continue;
+            }
+
+            merged.Add(new CcSwitchModelOption
+            {
+                Id = id,
+                DisplayName = string.IsNullOrWhiteSpace(option.DisplayName) ? id : option.DisplayName.Trim()
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(currentModel) && seen.Add(currentModel.Trim()))
+        {
+            merged.Insert(0, new CcSwitchModelOption
+            {
+                Id = currentModel.Trim(),
+                DisplayName = currentModel.Trim()
+            });
+        }
+
+        return merged;
     }
 
     private static bool IsManagedTool(SessionHistory session)

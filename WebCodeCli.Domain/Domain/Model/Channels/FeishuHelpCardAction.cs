@@ -112,6 +112,24 @@ public class FeishuHelpCardAction
     public int? Page { get; set; }
 
     /// <summary>
+    /// 会话管理卡片是否展开显示全部会话
+    /// </summary>
+    [JsonPropertyName("show_all_sessions")]
+    public bool? ShowAllSessions { get; set; }
+
+    /// <summary>
+    /// 表单中的模型值（会话启动设置时使用）
+    /// </summary>
+    [JsonPropertyName("model")]
+    public string? Model { get; set; }
+
+    /// <summary>
+    /// 表单中的思考等级（会话启动设置时使用）
+    /// </summary>
+    [JsonPropertyName("reasoning_effort")]
+    public string? ReasoningEffort { get; set; }
+
+    /// <summary>
     /// 是否以新的聊天卡片发送，而不是替换当前卡片
     /// </summary>
     [JsonPropertyName("send_as_new_card")]

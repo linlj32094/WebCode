@@ -22,6 +22,8 @@ namespace WebCodeCli.Domain.Domain.Service.Channels;
 /// </summary>
 public class FeishuCardActionService
 {
+    private const string LaunchSettingFollowDefaultValue = "__follow_default__";
+
     private static readonly HashSet<string> ReservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "CON",
@@ -64,6 +66,7 @@ public class FeishuCardActionService
     private const int SessionDirectoryPageSize = 8;
     private const int SessionFilePreviewLineLimit = 80;
     private const int SessionFilePreviewCharacterLimit = 4000;
+    private const int SessionManagerDefaultVisibleCount = 3;
     private const int ProjectBranchPageSize = 12;
     private const int StreamingStatusPulseIntervalMs = 900;
     private static readonly TimeSpan StreamingStatusPulseQuietWindow = TimeSpan.FromSeconds(3);
@@ -122,6 +125,11 @@ public class FeishuCardActionService
                 return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 无法解析动作", "error");
             }
 
+            if (string.IsNullOrWhiteSpace(action.ChatKey) && !string.IsNullOrWhiteSpace(chatId))
+            {
+                action.ChatKey = chatId;
+            }
+
             _logger.LogInformation("🔥 [FeishuHelp] 卡片回调: Action={Action}, CommandId={CommandId}",
                 action.Action, action.CommandId);
 
@@ -149,13 +157,19 @@ public class FeishuCardActionService
                 case "switch_session":
                     return await HandleSwitchSessionAsync(action.SessionId, action.ChatKey, operatorUserId, appId);
                 case "sync_session_provider":
-                    return await HandleSyncSessionProviderAsync(action.SessionId, action.ChatKey, operatorUserId);
+                    return await HandleSyncSessionProviderAsync(action.SessionId, action.ChatKey, operatorUserId, action.ShowAllSessions == true);
                 case "show_rename_session_form":
-                    return await HandleShowRenameSessionFormAsync(action.SessionId, action.ChatKey, operatorUserId);
+                    return await HandleShowRenameSessionFormAsync(action.SessionId, action.ChatKey, operatorUserId, action.ShowAllSessions == true);
                 case "rename_session":
-                    return await HandleRenameSessionAsync(action.SessionId, action.ChatKey, formValueElement, operatorUserId);
+                    return await HandleRenameSessionAsync(action.SessionId, action.ChatKey, formValueElement, operatorUserId, action.ShowAllSessions == true);
                 case "close_session":
-                    return await HandleCloseSessionAsync(action.SessionId, action.ChatKey, operatorUserId);
+                    return await HandleCloseSessionAsync(action.SessionId, action.ChatKey, operatorUserId, action.ShowAllSessions == true);
+                case "show_session_launch_settings_form":
+                    return await HandleShowSessionLaunchSettingsFormAsync(action.SessionId, action.ChatKey, operatorUserId, action.ShowAllSessions == true);
+                case "save_session_launch_settings":
+                    return await HandleSaveSessionLaunchSettingsAsync(action.SessionId, action.ChatKey, formValueElement, operatorUserId, action.ShowAllSessions == true);
+                case "clear_session_launch_settings":
+                    return await HandleClearSessionLaunchSettingsAsync(action.SessionId, action.ChatKey, operatorUserId, action.ShowAllSessions == true);
                 case "show_create_session_form":
                     return await HandleShowCreateSessionFormAsync(action.ChatKey, chatId, operatorUserId, action.ToolId);
                 case "create_session":
@@ -170,8 +184,8 @@ public class FeishuCardActionService
                     return await HandleBindWebUserAsync(formValueElement, chatId, operatorUserId, appId);
                 case "open_session_manager":
                     return action.SendAsNewCard
-                        ? await HandleOpenSessionManagerAsNewCardAsync(action.ChatKey ?? chatId, operatorUserId, appId)
-                        : await HandleOpenSessionManagerAsync(action.ChatKey ?? chatId, operatorUserId);
+                        ? await HandleOpenSessionManagerAsNewCardAsync(action.ChatKey ?? chatId, operatorUserId, appId, action.ShowAllSessions == true)
+                        : await HandleOpenSessionManagerAsync(action.ChatKey ?? chatId, operatorUserId, action.ShowAllSessions == true);
                 case "discover_external_cli_sessions":
                     return await HandleDiscoverExternalCliSessionsAsync(action.ChatKey ?? chatId, chatId, action.ToolId, action.Page, operatorUserId);
                 case "import_external_cli_session":
@@ -1350,7 +1364,7 @@ public class FeishuCardActionService
     /// <summary>
     /// 显式同步会话固定的 cc-switch Provider 快照
     /// </summary>
-    private async Task<CardActionTriggerResponseDto> HandleSyncSessionProviderAsync(string? sessionId, string? chatKey, string? operatorUserId)
+    private async Task<CardActionTriggerResponseDto> HandleSyncSessionProviderAsync(string? sessionId, string? chatKey, string? operatorUserId, bool showAllSessions = false)
     {
         if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(chatKey))
         {
@@ -1380,7 +1394,7 @@ public class FeishuCardActionService
         try
         {
             await _cliExecutor.SyncSessionCcSwitchSnapshotAsync(sessionId, effectiveToolId);
-            var card = await BuildSessionManagerCardAsync(actualChatKey, operatorUserId);
+            var card = await BuildSessionManagerCardAsync(actualChatKey, operatorUserId, username, showAllSessions);
             return _cardBuilder.BuildCardActionResponseV2(
                 card,
                 $"✅ 已将会话 {sessionId[..Math.Min(8, sessionId.Length)]} 同步到当前 cc-switch Provider",
@@ -1531,7 +1545,7 @@ public class FeishuCardActionService
     /// <summary>
     /// 处理关闭会话动作
     /// </summary>
-    private async Task<CardActionTriggerResponseDto> HandleCloseSessionAsync(string? sessionId, string? chatKey, string? operatorUserId)
+    private async Task<CardActionTriggerResponseDto> HandleCloseSessionAsync(string? sessionId, string? chatKey, string? operatorUserId, bool showAllSessions = false)
     {
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(chatKey))
         {
@@ -2383,7 +2397,9 @@ public class FeishuCardActionService
         var workspaceName = GetSessionWorkspaceName(sessionId, currentSession?.WorkspacePath);
         var sessionLabel = GetSessionDisplayLabel(currentSession);
         var toolLabel = GetToolDisplayName(currentSession?.ToolId ?? currentToolId);
-        var baseStatusMarkdown = $"当前会话：**{workspaceName}** · {sessionLabel} · {toolLabel}";
+        var baseStatusMarkdown = BuildSessionStatusMarkdown(
+            $"当前会话：**{workspaceName}** · {sessionLabel} · {toolLabel}",
+            currentSession);
 
         var chrome = new FeishuStreamingCardChrome
         {
@@ -2452,7 +2468,9 @@ public class FeishuCardActionService
 
         var workspaceName = GetSessionWorkspaceName(sessionId, fallbackWorkspacePath);
         var sessionLabel = GetSessionDisplayLabel(session);
-        return $"当前会话：{workspaceName}  {sessionLabel}\n已完成";
+        return BuildSessionStatusMarkdown(
+            $"当前会话：{workspaceName}  {sessionLabel}\n已完成",
+            session);
     }
 
     private static string? ExtractWorkspaceDirectoryName(string? workspacePath)
@@ -2494,7 +2512,7 @@ public class FeishuCardActionService
     /// <summary>
     /// 处理打开会话管理器动作
     /// </summary>
-    private async Task<CardActionTriggerResponseDto> HandleOpenSessionManagerAsync(string? chatId, string? operatorUserId)
+    private async Task<CardActionTriggerResponseDto> HandleOpenSessionManagerAsync(string? chatId, string? operatorUserId, bool showAllSessions = false)
     {
         if (string.IsNullOrEmpty(chatId))
         {
@@ -2503,7 +2521,7 @@ public class FeishuCardActionService
 
         try
         {
-            var card = await BuildSessionManagerCardAsync(chatId, operatorUserId);
+            var card = await BuildSessionManagerCardAsync(chatId, operatorUserId, showAllSessions: showAllSessions);
             return _cardBuilder.BuildCardActionResponseV2(card, "");
         }
         catch (Exception ex)
@@ -2513,7 +2531,7 @@ public class FeishuCardActionService
         }
     }
 
-    private async Task<CardActionTriggerResponseDto> HandleOpenSessionManagerAsNewCardAsync(string? chatId, string? operatorUserId, string? appId)
+    private async Task<CardActionTriggerResponseDto> HandleOpenSessionManagerAsNewCardAsync(string? chatId, string? operatorUserId, string? appId, bool showAllSessions = false)
     {
         if (string.IsNullOrEmpty(chatId))
         {
@@ -2529,7 +2547,7 @@ public class FeishuCardActionService
                 return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 请先绑定 Web 用户，再管理会话", "error");
             }
 
-            var card = await BuildSessionManagerCardAsync(normalizedChatId, operatorUserId);
+            var card = await BuildSessionManagerCardAsync(normalizedChatId, operatorUserId, showAllSessions: showAllSessions);
             await SendElementsCardToChatAsync(
                 normalizedChatId,
                 card,
@@ -2546,7 +2564,7 @@ public class FeishuCardActionService
         }
     }
 
-    public async Task<ElementsCardV2Dto> BuildSessionManagerCardAsync(string chatId, string? operatorUserId, string? fallbackUsername = null)
+    public async Task<ElementsCardV2Dto> BuildSessionManagerCardAsync(string chatId, string? operatorUserId, string? fallbackUsername = null, bool showAllSessions = false)
     {
         var chatKey = chatId.ToLowerInvariant();
         var username = string.IsNullOrWhiteSpace(fallbackUsername)
@@ -2560,8 +2578,16 @@ public class FeishuCardActionService
         var sessionEntities = await GetChatSessionEntitiesAsync(chatKey, username);
         var sessions = sessionEntities.Select(s => s.SessionId).ToList();
         var currentSessionId = _feishuChannel.GetCurrentSession(chatKey, username);
+        var visibleSessions = showAllSessions
+            ? sessionEntities
+            : sessionEntities.Take(SessionManagerDefaultVisibleCount).ToList();
 
         var elements = new List<object>();
+        var foldHint = sessionEntities.Count > SessionManagerDefaultVisibleCount
+            ? showAllSessions
+                ? $"当前展示全部 **{sessionEntities.Count}** 个会话。"
+                : $"当前默认展示最近 **{SessionManagerDefaultVisibleCount}** 个会话，可点击“更多会话”展开。"
+            : string.Empty;
 
         elements.Add(new
         {
@@ -2569,7 +2595,7 @@ public class FeishuCardActionService
             text = new
             {
                 tag = "lark_md",
-                content = $"## 📋 会话管理\n当前聊天共有 **{sessions.Count}** 个会话\n🛠️ 每个会话的 CLI 工具在创建时确定，如需更换请新建会话。"
+                content = $"## 📋 会话管理\n当前聊天共有 **{sessions.Count}** 个会话\n{foldHint}\n🛠️ 每个会话的 CLI 工具在创建时确定，如需更换请新建会话。".Trim()
             }
         });
 
@@ -2598,7 +2624,7 @@ public class FeishuCardActionService
             elements.Add(new { tag = "hr" });
         }
 
-        foreach (var session in sessionEntities.Take(10))
+        foreach (var session in visibleSessions)
         {
             var sessionId = session.SessionId;
             var workspacePath = GetSessionWorkspaceDisplay(sessionId);
@@ -2607,6 +2633,7 @@ public class FeishuCardActionService
             var effectiveToolId = NormalizeToolId(session.CcSwitchSnapshotToolId ?? session.ToolId);
             var toolLabel = GetToolDisplayName(effectiveToolId ?? session.ToolId);
             var isManagedTool = IsCcSwitchManagedTool(effectiveToolId);
+            var launchOverrideSummary = BuildSessionLaunchOverrideSummary(session);
 
             var sessionInfo = $"{(isCurrent ? "✅ " : "")}**{sessionTitle}**\n🆔 {sessionId[..8]}...\n🛠️ {toolLabel}\n📂 {workspacePath}\n⏱️ {session.UpdatedAt:yyyy-MM-dd HH:mm}";
             if (isManagedTool)
@@ -2614,92 +2641,95 @@ public class FeishuCardActionService
                 sessionInfo += $"\n🔌 Provider: {GetPinnedProviderDisplay(session)}";
                 sessionInfo += $"\n🔄 同步: {(session.CcSwitchSnapshotSyncedAt.HasValue ? session.CcSwitchSnapshotSyncedAt.Value.ToString("yyyy-MM-dd HH:mm") : "未同步")}";
             }
-
-            elements.Add(new
+            if (!string.IsNullOrWhiteSpace(launchOverrideSummary))
             {
-                tag = "div",
-                text = new { tag = "lark_md", content = sessionInfo }
-            });
+                sessionInfo += $"\n{launchOverrideSummary}";
+            }
 
-            elements.Add(new
+            var actions = new List<object>
             {
-                tag = "button",
-                text = new { tag = "plain_text", content = isCurrent ? "当前" : "切换" },
-                type = isCurrent ? "default" : "primary",
-                behaviors = new[]
-                {
+                BuildActionButton(
+                    isCurrent ? "当前" : "切换",
+                    isCurrent ? "default" : "primary",
                     new
                     {
-                        type = "callback",
-                        value = new
-                        {
-                            action = "switch_session",
-                            session_id = sessionId,
-                            chat_key = chatKey
-                        }
-                    }
-                }
-            });
-
-            elements.Add(new
-            {
-                tag = "button",
-                text = new { tag = "plain_text", content = "重命名" },
-                type = "default",
-                behaviors = new[]
-                {
+                        action = "switch_session",
+                        session_id = sessionId,
+                        chat_key = chatKey
+                    }),
+                BuildActionButton(
+                    "重命名",
+                    "default",
                     new
                     {
-                        type = "callback",
-                        value = new
-                        {
-                            action = "show_rename_session_form",
-                            session_id = sessionId,
-                            chat_key = chatKey
-                        }
-                    }
-                }
-            });
+                        action = "show_rename_session_form",
+                        session_id = sessionId,
+                        chat_key = chatKey,
+                        show_all_sessions = showAllSessions
+                    })
+            };
 
             if (isManagedTool)
             {
-                elements.Add(new
-                {
-                    tag = "button",
-                    text = new { tag = "plain_text", content = "同步 Provider" },
-                    type = "default",
-                    behaviors = new[]
+                actions.Add(BuildActionButton(
+                    "模型设置",
+                    "default",
+                    new
                     {
-                        new
-                        {
-                            type = "callback",
-                            value = new
-                            {
-                                action = "sync_session_provider",
-                                session_id = sessionId,
-                                chat_key = chatKey
-                            }
-                        }
-                    }
-                });
+                        action = "show_session_launch_settings_form",
+                        session_id = sessionId,
+                        chat_key = chatKey,
+                        show_all_sessions = showAllSessions
+                    }));
+                actions.Add(BuildActionButton(
+                    "同步 Provider",
+                    "default",
+                    new
+                    {
+                        action = "sync_session_provider",
+                        session_id = sessionId,
+                        chat_key = chatKey,
+                        show_all_sessions = showAllSessions
+                    }));
             }
 
             elements.Add(new
             {
-                tag = "button",
-                text = new { tag = "plain_text", content = "关闭" },
-                type = "danger",
-                behaviors = new[]
+                tag = "column_set",
+                flex_mode = "none",
+                background_style = "default",
+                columns = new object[]
                 {
                     new
                     {
-                        type = "callback",
-                        value = new
+                        tag = "column",
+                        width = "weighted",
+                        weight = 5,
+                        vertical_align = "top",
+                        elements = new object[]
                         {
-                            action = "close_session",
-                            session_id = sessionId,
-                            chat_key = chatKey
+                            new
+                            {
+                                tag = "div",
+                                text = new { tag = "lark_md", content = sessionInfo }
+                            }
                         }
+                    },
+                    new
+                    {
+                        tag = "column",
+                        width = "auto",
+                        vertical_align = "top",
+                        elements = actions.Append(BuildActionButton(
+                            "关闭",
+                            "danger",
+                            new
+                            {
+                                action = "close_session",
+                                session_id = sessionId,
+                                chat_key = chatKey,
+                                show_all_sessions = showAllSessions
+                            })).ToArray()
                     }
                 }
             });
@@ -2714,6 +2744,20 @@ public class FeishuCardActionService
                 tag = "div",
                 text = new { tag = "plain_text", content = "暂无会话，请点击下方「新建会话」按钮创建会话。" }
             });
+        }
+
+        if (sessionEntities.Count > SessionManagerDefaultVisibleCount)
+        {
+            elements.Add(BuildActionButton(
+                showAllSessions ? "收起" : "更多会话",
+                "default",
+                new
+                {
+                    action = "open_session_manager",
+                    chat_key = chatKey,
+                    show_all_sessions = !showAllSessions
+                }));
+            elements.Add(new { tag = "hr" });
         }
 
         elements.Add(new { tag = "hr" });
@@ -2812,7 +2856,7 @@ public class FeishuCardActionService
         };
     }
 
-    private async Task<CardActionTriggerResponseDto> HandleShowRenameSessionFormAsync(string? sessionId, string? chatKey, string? operatorUserId)
+    private async Task<CardActionTriggerResponseDto> HandleShowRenameSessionFormAsync(string? sessionId, string? chatKey, string? operatorUserId, bool showAllSessions = false)
     {
         if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(chatKey))
         {
@@ -2834,14 +2878,15 @@ public class FeishuCardActionService
             return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 会话不存在或已失效，请重新打开会话管理", "error");
         }
 
-        return _cardBuilder.BuildCardActionResponseV2(BuildRenameSessionFormCard(actualChatKey, session), string.Empty);
+        return _cardBuilder.BuildCardActionResponseV2(BuildRenameSessionFormCard(actualChatKey, session, showAllSessions), string.Empty);
     }
 
     private async Task<CardActionTriggerResponseDto> HandleRenameSessionAsync(
         string? sessionId,
         string? chatKey,
         JsonElement? formValue,
-        string? operatorUserId)
+        string? operatorUserId,
+        bool showAllSessions = false)
     {
         if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(chatKey))
         {
@@ -2881,11 +2926,11 @@ public class FeishuCardActionService
             return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 重命名会话失败，请稍后重试", "error");
         }
 
-        var card = await BuildSessionManagerCardAsync(actualChatKey, operatorUserId, username);
+        var card = await BuildSessionManagerCardAsync(actualChatKey, operatorUserId, username, showAllSessions);
         return _cardBuilder.BuildCardActionResponseV2(card, $"✅ 已将会话重命名为 {newTitle}", "success");
     }
 
-    private ElementsCardV2Dto BuildRenameSessionFormCard(string chatKey, ChatSessionEntity session)
+    private ElementsCardV2Dto BuildRenameSessionFormCard(string chatKey, ChatSessionEntity session, bool showAllSessions)
     {
         var currentTitle = GetSessionDisplayTitle(session);
         var elements = new List<object>
@@ -2940,7 +2985,8 @@ public class FeishuCardActionService
                                         {
                                             action = "rename_session",
                                             session_id = session.SessionId,
-                                            chat_key = chatKey
+                                            chat_key = chatKey,
+                                            show_all_sessions = showAllSessions
                                         }
                                     }
                                 }
@@ -2958,7 +3004,8 @@ public class FeishuCardActionService
                                         new
                                         {
                                             action = "open_session_manager",
-                                            chat_key = chatKey
+                                            chat_key = chatKey,
+                                            show_all_sessions = showAllSessions
                                         })
                                 }
                             }
@@ -2987,9 +3034,495 @@ public class FeishuCardActionService
         };
     }
 
+    private async Task<CardActionTriggerResponseDto> HandleShowSessionLaunchSettingsFormAsync(
+        string? sessionId,
+        string? chatKey,
+        string? operatorUserId,
+        bool showAllSessions = false)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(chatKey))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 参数错误，无法打开模型设置", "error");
+        }
+
+        var actualChatKey = NormalizeChatKey(chatKey);
+        var username = ResolveFeishuUsername(actualChatKey, operatorUserId);
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 请先绑定 Web 用户，再编辑会话启动设置", "error");
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IChatSessionRepository>();
+        var session = await repo.GetByIdAndUsernameAsync(sessionId, username);
+        if (session == null || !string.Equals(session.FeishuChatKey, actualChatKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 会话不存在或已失效，请重新打开会话管理", "error");
+        }
+
+        var effectiveToolId = SessionLaunchOverrideHelper.ResolveEffectiveToolId(session.ToolId, session.CcSwitchSnapshotToolId);
+        if (!IsCcSwitchManagedTool(effectiveToolId))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("⚠️ 当前会话工具不支持模型设置", "warning");
+        }
+
+        var ccSwitchService = scope.ServiceProvider.GetService<ICcSwitchService>();
+        return _cardBuilder.BuildCardActionResponseV2(
+            await BuildSessionLaunchSettingsFormCardAsync(actualChatKey, session, showAllSessions, ccSwitchService),
+            string.Empty);
+    }
+
+    private async Task<CardActionTriggerResponseDto> HandleSaveSessionLaunchSettingsAsync(
+        string? sessionId,
+        string? chatKey,
+        JsonElement? formValue,
+        string? operatorUserId,
+        bool showAllSessions = false)
+    {
+        return await PersistSessionLaunchSettingsAsync(
+            sessionId,
+            chatKey,
+            formValue,
+            operatorUserId,
+            showAllSessions,
+            clearOverride: false);
+    }
+
+    private async Task<CardActionTriggerResponseDto> HandleClearSessionLaunchSettingsAsync(
+        string? sessionId,
+        string? chatKey,
+        string? operatorUserId,
+        bool showAllSessions = false)
+    {
+        return await PersistSessionLaunchSettingsAsync(
+            sessionId,
+            chatKey,
+            formValue: null,
+            operatorUserId,
+            showAllSessions,
+            clearOverride: true);
+    }
+
+    private async Task<CardActionTriggerResponseDto> PersistSessionLaunchSettingsAsync(
+        string? sessionId,
+        string? chatKey,
+        JsonElement? formValue,
+        string? operatorUserId,
+        bool showAllSessions,
+        bool clearOverride)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(chatKey))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 参数错误，无法保存模型设置", "error");
+        }
+
+        var actualChatKey = NormalizeChatKey(chatKey);
+        var username = ResolveFeishuUsername(actualChatKey, operatorUserId);
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 请先绑定 Web 用户，再编辑会话启动设置", "error");
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IChatSessionRepository>();
+        var session = await repo.GetByIdAndUsernameAsync(sessionId, username);
+        if (session == null || !string.Equals(session.FeishuChatKey, actualChatKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 会话不存在或已失效，请重新打开会话管理", "error");
+        }
+
+        var effectiveToolId = SessionLaunchOverrideHelper.ResolveEffectiveToolId(session.ToolId, session.CcSwitchSnapshotToolId);
+        if (!IsCcSwitchManagedTool(effectiveToolId))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("⚠️ 当前会话工具不支持模型设置", "warning");
+        }
+
+        try
+        {
+            var currentOverrides = SessionLaunchOverrideHelper.Deserialize(session.ToolLaunchOverridesJson);
+            var currentOverride = SessionLaunchOverrideHelper.GetEffectiveOverride(
+                currentOverrides,
+                effectiveToolId,
+                session.ToolId,
+                session.CcSwitchSnapshotToolId);
+            var model = clearOverride
+                ? null
+                : NormalizeSessionLaunchFormValue(GetFormStringValue(formValue, "launch_model"), currentOverride?.Model);
+            var reasoningEffort = clearOverride
+                ? null
+                : NormalizeSessionLaunchFormValue(GetFormStringValue(formValue, "launch_reasoning_effort"), currentOverride?.ReasoningEffort);
+            var updatedOverrides = SessionLaunchOverrideHelper.ApplyOverride(
+                currentOverrides,
+                effectiveToolId,
+                model,
+                reasoningEffort);
+
+            session.ToolLaunchOverridesJson = SessionLaunchOverrideHelper.Serialize(updatedOverrides);
+            session.UpdatedAt = DateTime.Now;
+
+            if (!await repo.UpdateAsync(session))
+            {
+                return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 保存模型设置失败，请稍后重试", "error");
+            }
+
+            await _cliExecutor.ResetSessionRuntimeAsync(sessionId);
+
+            var card = await BuildSessionManagerCardAsync(actualChatKey, operatorUserId, username, showAllSessions);
+            return _cardBuilder.BuildCardActionResponseV2(
+                card,
+                clearOverride
+                    ? "✅ 已清除该会话的启动覆盖，下次执行将跟随默认设置"
+                    : "✅ 已保存该会话的启动设置，下次执行将按新设置启动",
+                "success");
+        }
+        catch (ArgumentException ex)
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse($"❌ {ex.Message}", "error");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "保存飞书会话启动设置失败: SessionId={SessionId}", sessionId);
+            return _cardBuilder.BuildCardActionToastOnlyResponse($"❌ 保存模型设置失败: {ex.Message}", "error");
+        }
+    }
+
+    private async Task<ElementsCardV2Dto> BuildSessionLaunchSettingsFormCardAsync(
+        string chatKey,
+        ChatSessionEntity session,
+        bool showAllSessions,
+        ICcSwitchService? ccSwitchService)
+    {
+        var effectiveToolId = SessionLaunchOverrideHelper.ResolveEffectiveToolId(session.ToolId, session.CcSwitchSnapshotToolId);
+        var launchOverride = SessionLaunchOverrideHelper.GetEffectiveOverride(
+            SessionLaunchOverrideHelper.Deserialize(session.ToolLaunchOverridesJson),
+            effectiveToolId,
+            session.ToolId,
+            session.CcSwitchSnapshotToolId);
+        var summary = BuildSessionLaunchOverrideSummary(session);
+        var title = GetSessionDisplayTitle(session);
+        var isCodex = string.Equals(effectiveToolId, "codex", StringComparison.OrdinalIgnoreCase);
+        var helperText = string.IsNullOrWhiteSpace(summary)
+            ? "当前覆盖：跟随默认"
+            : $"当前覆盖：{summary.Replace("\n", "；", StringComparison.Ordinal)}";
+        var modelOptions = await LoadSessionLaunchModelOptionsAsync(
+            ccSwitchService,
+            effectiveToolId,
+            session.CcSwitchProviderId,
+            launchOverride?.Model);
+
+        var formElements = new List<object>
+        {
+            BuildSessionLaunchModelField(modelOptions)
+        };
+
+        if (isCodex)
+        {
+            formElements.Add(BuildSessionLaunchReasoningField());
+        }
+
+        formElements.Add(new
+        {
+            tag = "column_set",
+            flex_mode = "none",
+            background_style = "default",
+            columns = new object[]
+            {
+                new
+                {
+                    tag = "column",
+                    width = "auto",
+                    vertical_align = "top",
+                    elements = new object[]
+                    {
+                        new
+                        {
+                            tag = "button",
+                            text = new { tag = "plain_text", content = "保存设置" },
+                            type = "primary",
+                            form_action_type = "submit",
+                            name = $"save_session_launch_settings__{session.SessionId}",
+                            value = new
+                            {
+                                action = "save_session_launch_settings",
+                                session_id = session.SessionId,
+                                chat_key = chatKey,
+                                show_all_sessions = showAllSessions
+                            }
+                        }
+                    }
+                },
+                new
+                {
+                    tag = "column",
+                    width = "auto",
+                    vertical_align = "top",
+                    elements = new object[]
+                    {
+                        BuildActionButton(
+                            "清除覆盖",
+                            "default",
+                            new
+                            {
+                                action = "clear_session_launch_settings",
+                                session_id = session.SessionId,
+                                chat_key = chatKey,
+                                show_all_sessions = showAllSessions
+                            })
+                    }
+                },
+                new
+                {
+                    tag = "column",
+                    width = "auto",
+                    vertical_align = "top",
+                    elements = new object[]
+                    {
+                        BuildActionButton(
+                            "返回会话列表",
+                            "default",
+                            new
+                            {
+                                action = "open_session_manager",
+                                chat_key = chatKey,
+                                show_all_sessions = showAllSessions
+                            })
+                    }
+                }
+            }
+        });
+
+        var elements = new List<object>
+        {
+            new
+            {
+                tag = "div",
+                text = new
+                {
+                    tag = "lark_md",
+                    content = $"## ⚙️ 会话启动设置\n- 会话：`{title}`\n- 工具：**{GetToolDisplayName(effectiveToolId)}**\n- {helperText}\n- Provider 仍由 `cc-switch` 决定\n- 保存后仅重置当前会话运行态，下次执行生效"
+                }
+            },
+            new { tag = "hr" },
+            new
+            {
+                tag = "form",
+                name = $"session_launch_settings_form__{session.SessionId}",
+                elements = formElements.ToArray()
+            }
+        };
+
+        return new ElementsCardV2Dto
+        {
+            Header = new ElementsCardV2Dto.HeaderSuffix
+            {
+                Template = "wathet",
+                Title = new HeaderTitleElement { Content = "⚙️ 会话启动设置" }
+            },
+            Config = new ElementsCardV2Dto.ConfigSuffix
+            {
+                EnableForward = true,
+                UpdateMulti = true
+            },
+            Body = new ElementsCardV2Dto.BodySuffix
+            {
+                Elements = elements.ToArray()
+            }
+        };
+    }
+
+    private async Task<List<CcSwitchModelOption>> LoadSessionLaunchModelOptionsAsync(
+        ICcSwitchService? ccSwitchService,
+        string toolId,
+        string? providerId,
+        string? currentModel)
+    {
+        if (ccSwitchService == null)
+        {
+            return MergeLaunchModelOptions([], currentModel);
+        }
+
+        try
+        {
+            var catalog = await ccSwitchService.GetModelCatalogAsync(toolId, providerId);
+            return MergeLaunchModelOptions(catalog.Models, currentModel);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "飞书端读取 Provider 模型列表失败: ToolId={ToolId}, ProviderId={ProviderId}", toolId, providerId);
+            return MergeLaunchModelOptions([], currentModel);
+        }
+    }
+
+    private static List<CcSwitchModelOption> MergeLaunchModelOptions(IEnumerable<CcSwitchModelOption> options, string? currentModel)
+    {
+        var merged = new List<CcSwitchModelOption>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var option in options)
+        {
+            if (option == null || string.IsNullOrWhiteSpace(option.Id))
+            {
+                continue;
+            }
+
+            var id = option.Id.Trim();
+            if (!seen.Add(id))
+            {
+                continue;
+            }
+
+            merged.Add(new CcSwitchModelOption
+            {
+                Id = id,
+                DisplayName = string.IsNullOrWhiteSpace(option.DisplayName) ? id : option.DisplayName.Trim()
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(currentModel) && seen.Add(currentModel.Trim()))
+        {
+            merged.Insert(0, new CcSwitchModelOption
+            {
+                Id = currentModel.Trim(),
+                DisplayName = currentModel.Trim()
+            });
+        }
+
+        return merged;
+    }
+
+    private static object BuildSessionLaunchModelField(IReadOnlyList<CcSwitchModelOption> modelOptions)
+    {
+        if (modelOptions.Count == 0)
+        {
+            return new
+            {
+                tag = "input",
+                input_type = "text",
+                name = "launch_model",
+                label = new { tag = "plain_text", content = "Model" },
+                placeholder = new { tag = "plain_text", content = "留空表示跟随默认模型" },
+                default_value = string.Empty
+            };
+        }
+
+        var options = BuildSelectOptions(
+            new[]
+            {
+                new CcSwitchModelOption { Id = LaunchSettingFollowDefaultValue, DisplayName = "跟随默认" }
+            }.Concat(modelOptions));
+
+        return new
+        {
+            tag = "select_static",
+            name = "launch_model",
+            placeholder = new { tag = "plain_text", content = "请选择模型" },
+            initial_option = (string?)null,
+            options
+        };
+    }
+
+    private static object BuildSessionLaunchReasoningField()
+    {
+        var options = BuildSelectOptions(
+            [
+                new CcSwitchModelOption { Id = LaunchSettingFollowDefaultValue, DisplayName = "跟随默认" },
+                new CcSwitchModelOption { Id = "low", DisplayName = "low" },
+                new CcSwitchModelOption { Id = "medium", DisplayName = "medium" },
+                new CcSwitchModelOption { Id = "high", DisplayName = "high" },
+                new CcSwitchModelOption { Id = "xhigh", DisplayName = "xhigh" }
+            ]);
+
+        return new
+        {
+            tag = "select_static",
+            name = "launch_reasoning_effort",
+            placeholder = new { tag = "plain_text", content = "请选择思考等级" },
+            initial_option = (string?)null,
+            options
+        };
+    }
+
+    private static object[] BuildSelectOptions(IEnumerable<CcSwitchModelOption> options)
+    {
+        return options
+            .Select(option => new
+            {
+                text = new { tag = "plain_text", content = option.DisplayName },
+                value = option.Id
+            })
+            .Cast<object>()
+            .ToArray();
+    }
+
+    private static string? NormalizeSessionLaunchFormValue(string? submittedValue, string? currentValue)
+    {
+        if (submittedValue == null)
+        {
+            return currentValue?.Trim();
+        }
+
+        var normalizedSubmittedValue = submittedValue.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedSubmittedValue))
+        {
+            return currentValue?.Trim();
+        }
+
+        return string.Equals(normalizedSubmittedValue, LaunchSettingFollowDefaultValue, StringComparison.Ordinal)
+            ? null
+            : normalizedSubmittedValue;
+    }
+
     private static string GetSessionDisplayTitle(ChatSessionEntity session)
     {
         return string.IsNullOrWhiteSpace(session.Title) ? "新会话" : session.Title.Trim();
+    }
+
+    private static string BuildSessionStatusMarkdown(string baseMarkdown, ChatSessionEntity? session)
+    {
+        var launchOverrideSummary = BuildSessionLaunchOverrideSummary(session);
+        return string.IsNullOrWhiteSpace(launchOverrideSummary)
+            ? baseMarkdown
+            : $"{baseMarkdown}\n{launchOverrideSummary}";
+    }
+
+    private static string? BuildSessionLaunchOverrideSummary(ChatSessionEntity? session)
+    {
+        if (session == null)
+        {
+            return null;
+        }
+
+        var effectiveToolId = SessionLaunchOverrideHelper.ResolveEffectiveToolId(
+            session.ToolId,
+            session.CcSwitchSnapshotToolId);
+        if (!SessionLaunchOverrideHelper.SupportsLaunchOverrides(effectiveToolId))
+        {
+            return null;
+        }
+
+        var launchOverride = SessionLaunchOverrideHelper.GetEffectiveOverride(
+            SessionLaunchOverrideHelper.Deserialize(session.ToolLaunchOverridesJson),
+            effectiveToolId,
+            session.ToolId,
+            session.CcSwitchSnapshotToolId);
+        if (launchOverride == null)
+        {
+            return null;
+        }
+
+        var summaryLines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(launchOverride.Model))
+        {
+            summaryLines.Add($"🤖 模型: `{launchOverride.Model}`");
+        }
+
+        if (string.Equals(effectiveToolId, "codex", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(launchOverride.ReasoningEffort))
+        {
+            summaryLines.Add($"🧠 思考: `{launchOverride.ReasoningEffort}`");
+        }
+
+        return summaryLines.Count == 0 ? null : string.Join("\n", summaryLines);
     }
 
     private async Task<CardActionTriggerResponseDto> HandleDiscoverExternalCliSessionsAsync(

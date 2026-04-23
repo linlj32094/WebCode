@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -21,6 +22,8 @@ namespace WebCodeCli.Domain.Domain.Service;
 [ServiceDescription(typeof(ICliExecutorService), ServiceLifetime.Singleton)]
 public class CliExecutorService : ICliExecutorService
 {
+    private const string CodexLaunchBaseConfigFileName = "config.webcode.base.toml";
+
     private readonly ILogger<CliExecutorService> _logger;
     private readonly CliToolsOption _options;
     private readonly SemaphoreSlim _concurrencyLimiter;
@@ -271,6 +274,55 @@ public class CliExecutorService : ICliExecutorService
         }
     }
 
+    public async Task ResetSessionRuntimeAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        _processManager.CleanupSessionProcesses(sessionId);
+
+        lock (_cliSessionLock)
+        {
+            _cliThreadIds.Remove(sessionId);
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+
+            var sessionRepository = scope.ServiceProvider.GetService<IChatSessionRepository>();
+            if (sessionRepository != null)
+            {
+                await sessionRepository.UpdateCliThreadIdAsync(sessionId, null);
+            }
+
+            var sessionOutputService = scope.ServiceProvider.GetService<ISessionOutputService>();
+            if (sessionOutputService != null)
+            {
+                var outputState = await sessionOutputService.GetBySessionIdAsync(sessionId);
+                if (outputState != null && !string.IsNullOrWhiteSpace(outputState.ActiveThreadId))
+                {
+                    outputState.ActiveThreadId = string.Empty;
+                    await sessionOutputService.SaveAsync(outputState);
+                }
+            }
+
+            _logger.LogInformation("已重置会话运行态: {SessionId}", sessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "重置会话运行态失败(已完成内存清理): {SessionId}", sessionId);
+        }
+    }
+
     #endregion
 
     public async IAsyncEnumerable<StreamOutputChunk> ExecuteStreamAsync(
@@ -518,9 +570,7 @@ public class CliExecutorService : ICliExecutorService
         
         // 获取环境变量(优先从数据库)
         var environmentVariables = await GetToolEnvironmentVariablesAsync(tool.Id);
-        
-        // 对于 Codex 工具，需要根据环境变量动态生成配置文件
-        // 因为 Codex CLI 优先读取配置文件而非环境变量
+
         if (string.Equals(tool.Id, "codex", StringComparison.OrdinalIgnoreCase)
             && !_ccSwitchService.IsManagedTool(tool.Id))
         {
@@ -535,12 +585,13 @@ public class CliExecutorService : ICliExecutorService
         string? cliThreadId = GetCliThreadId(sessionId);
         
         // 构建会话上下文
-        var sessionContext = new CliSessionContext
-        {
-            SessionId = sessionId,
-            CliThreadId = cliThreadId,
-            WorkingDirectory = sessionWorkspace
-        };
+        var sessionContext = await BuildCliSessionContextAsync(
+            sessionId,
+            tool.Id,
+            sessionWorkspace,
+            cliThreadId,
+            environmentVariables,
+            cancellationToken);
         
         _logger.LogInformation("使用持久化进程模式执行 CLI 工具: {Tool}, 会话: {Session}, 工作目录: {Workspace}, 命令: {Command}, CLI Thread: {CliThread}, 适配器: {Adapter}", 
             tool.Name, sessionId, sessionWorkspace, resolvedCommand, cliThreadId ?? "新会话", adapter?.GetType().Name ?? "无");
@@ -1116,13 +1167,22 @@ public class CliExecutorService : ICliExecutorService
             yield break;
         }
         
-        // 构建会话上下文
-        var sessionContext = new CliSessionContext
+        var environmentVariables = await GetToolEnvironmentVariablesAsync(tool.Id);
+
+        if (string.Equals(tool.Id, "codex", StringComparison.OrdinalIgnoreCase)
+            && !_ccSwitchService.IsManagedTool(tool.Id))
         {
-            SessionId = sessionId,
-            CliThreadId = cliThreadId,
-            WorkingDirectory = sessionWorkspace
-        };
+            GenerateCodexConfigFile(environmentVariables);
+        }
+
+        // 构建会话上下文
+        var sessionContext = await BuildCliSessionContextAsync(
+            sessionId,
+            tool.Id,
+            sessionWorkspace,
+            cliThreadId,
+            environmentVariables,
+            cancellationToken);
 
         // 构建参数，使用适配器（如果有）
         string arguments;
@@ -1148,18 +1208,7 @@ public class CliExecutorService : ICliExecutorService
         
         // 解析命令路径(如果配置了npm目录且命令是相对路径)
         var commandPath = ResolveCommandPath(tool.Command);
-        
-        // 获取环境变量(优先从数据库)
-        var environmentVariables = await GetToolEnvironmentVariablesAsync(tool.Id);
-        
-        // 对于 Codex 工具，需要根据环境变量动态生成配置文件
-        // 因为 Codex CLI 优先读取配置文件而非环境变量
-        if (string.Equals(tool.Id, "codex", StringComparison.OrdinalIgnoreCase)
-            && !_ccSwitchService.IsManagedTool(tool.Id))
-        {
-            GenerateCodexConfigFile(environmentVariables);
-        }
-        
+
         _logger.LogInformation("执行 CLI 工具: {Tool}, 会话: {Session}, 工作目录: {Workspace}, 命令: {Command} {Arguments}", 
             tool.Name, sessionId, sessionWorkspace, commandPath, arguments);
 
@@ -2835,6 +2884,15 @@ public class CliExecutorService : ICliExecutorService
             await source.CopyToAsync(target, cancellationToken);
         }
 
+        if (string.Equals(toolId, "codex", StringComparison.OrdinalIgnoreCase))
+        {
+            var baseConfigPath = GetCodexLaunchBaseConfigPath(sessionWorkspace);
+            Directory.CreateDirectory(Path.GetDirectoryName(baseConfigPath)!);
+            await using var source = new FileStream(status.LiveConfigPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            await using var target = new FileStream(baseConfigPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await source.CopyToAsync(target, cancellationToken);
+        }
+
         var snapshot = new CcSwitchSessionSnapshot
         {
             UsesSnapshot = true,
@@ -2913,6 +2971,158 @@ public class CliExecutorService : ICliExecutorService
         return chatSessionRepository == null
             ? null
             : await chatSessionRepository.GetByIdAsync(sessionId);
+    }
+
+    private async Task<SessionToolLaunchOverride?> GetEffectiveSessionLaunchOverrideAsync(string sessionId, string toolId)
+    {
+        var session = await TryGetChatSessionAsync(sessionId);
+        if (session == null || string.IsNullOrWhiteSpace(session.ToolLaunchOverridesJson))
+        {
+            return null;
+        }
+
+        var overrides = SessionLaunchOverrideHelper.Deserialize(session.ToolLaunchOverridesJson);
+        return SessionLaunchOverrideHelper.GetEffectiveOverride(
+            overrides,
+            toolId,
+            session.ToolId,
+            session.CcSwitchSnapshotToolId);
+    }
+
+    private async Task<CliSessionContext> BuildCliSessionContextAsync(
+        string sessionId,
+        string toolId,
+        string sessionWorkspace,
+        string? cliThreadId,
+        Dictionary<string, string> environmentVariables,
+        CancellationToken cancellationToken)
+    {
+        var launchOverride = await GetEffectiveSessionLaunchOverrideAsync(sessionId, toolId);
+        var normalizedToolId = SessionLaunchOverrideHelper.NormalizeToolId(toolId);
+
+        if (string.Equals(normalizedToolId, "codex", StringComparison.OrdinalIgnoreCase)
+            && _ccSwitchService.IsManagedTool(normalizedToolId))
+        {
+            await PrepareManagedCodexLaunchConfigAsync(
+                sessionWorkspace,
+                environmentVariables,
+                launchOverride,
+                cancellationToken);
+        }
+
+        return new CliSessionContext
+        {
+            SessionId = sessionId,
+            CliThreadId = cliThreadId,
+            WorkingDirectory = sessionWorkspace,
+            LaunchModelOverride = launchOverride?.Model,
+            LaunchReasoningEffortOverride = launchOverride?.ReasoningEffort
+        };
+    }
+
+    private async Task PrepareManagedCodexLaunchConfigAsync(
+        string sessionWorkspace,
+        Dictionary<string, string> environmentVariables,
+        SessionToolLaunchOverride? launchOverride,
+        CancellationToken cancellationToken)
+    {
+        var codexConfigPath = Path.Combine(sessionWorkspace, ".codex", "config.toml");
+        var baseConfigPath = GetCodexLaunchBaseConfigPath(sessionWorkspace);
+        var baseConfigDirectory = Path.GetDirectoryName(baseConfigPath);
+        if (!string.IsNullOrWhiteSpace(baseConfigDirectory))
+        {
+            Directory.CreateDirectory(baseConfigDirectory);
+        }
+
+        string baseContent;
+        if (File.Exists(baseConfigPath))
+        {
+            baseContent = await File.ReadAllTextAsync(baseConfigPath, cancellationToken);
+        }
+        else if (File.Exists(codexConfigPath))
+        {
+            baseContent = await File.ReadAllTextAsync(codexConfigPath, cancellationToken);
+            await WriteFileIfChangedAsync(baseConfigPath, baseContent, cancellationToken);
+        }
+        else
+        {
+            baseContent = BuildCodexConfigContent(environmentVariables);
+            await WriteFileIfChangedAsync(baseConfigPath, baseContent, cancellationToken);
+        }
+
+        var launchConfigContent = ApplyCodexLaunchOverride(baseContent, launchOverride);
+        await WriteFileIfChangedAsync(codexConfigPath, launchConfigContent, cancellationToken);
+    }
+
+    private static string GetCodexLaunchBaseConfigPath(string sessionWorkspace)
+    {
+        return Path.Combine(sessionWorkspace, ".codex", CodexLaunchBaseConfigFileName);
+    }
+
+    private static string ApplyCodexLaunchOverride(string baseContent, SessionToolLaunchOverride? launchOverride)
+    {
+        var mergedContent = baseContent;
+        if (launchOverride == null)
+        {
+            return mergedContent;
+        }
+
+        if (!string.IsNullOrWhiteSpace(launchOverride.Model))
+        {
+            mergedContent = UpsertTomlStringSetting(mergedContent, "model", launchOverride.Model);
+        }
+
+        if (!string.IsNullOrWhiteSpace(launchOverride.ReasoningEffort))
+        {
+            mergedContent = UpsertTomlStringSetting(mergedContent, "model_reasoning_effort", launchOverride.ReasoningEffort);
+        }
+
+        return mergedContent;
+    }
+
+    private static string UpsertTomlStringSetting(string content, string key, string value)
+    {
+        var pattern = $"(?m)^(?<prefix>\\s*{Regex.Escape(key)}\\s*=\\s*)\\\".*?\\\"\\s*$";
+        var escapedValue = EscapeTomlString(value);
+        if (Regex.IsMatch(content, pattern))
+        {
+            return Regex.Replace(content, pattern, match => $"{match.Groups["prefix"].Value}\"{escapedValue}\"");
+        }
+
+        var normalizedContent = content;
+        if (!normalizedContent.EndsWith("\n", StringComparison.Ordinal))
+        {
+            normalizedContent += Environment.NewLine;
+        }
+
+        return normalizedContent + $"{key} = \"{escapedValue}\"{Environment.NewLine}";
+    }
+
+    private static string EscapeTomlString(string value)
+    {
+        return value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
+    }
+
+    private static async Task WriteFileIfChangedAsync(string path, string content, CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        if (File.Exists(path))
+        {
+            var existingContent = await File.ReadAllTextAsync(path, cancellationToken);
+            if (string.Equals(existingContent, content, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        await File.WriteAllTextAsync(path, content, cancellationToken);
     }
 
     private bool HasCcSwitchSnapshotForTool(ChatSessionEntity? session, string toolId)

@@ -163,7 +163,7 @@ public class FeishuCardActionHandler : ICallbackHandler<
 
             if (string.IsNullOrEmpty(actionValue) && eventDto.Action.Tag == "button" && !string.IsNullOrWhiteSpace(eventDto.Action.Name))
             {
-                actionValue = BuildFormSubmitActionValue(eventDto.Action.Name);
+                actionValue = BuildFormSubmitActionValue(eventDto.Action.Name, chatId);
                 if (!string.IsNullOrEmpty(actionValue))
                 {
                     _logger.LogInformation("🔥 [FeishuCard] 根据按钮名称回填 Action.Value: Name={ActionName}, ActionValue={ActionValue}",
@@ -222,7 +222,7 @@ public class FeishuCardActionHandler : ICallbackHandler<
         }
     }
 
-    private static string? BuildFormSubmitActionValue(string actionName)
+    private static string? BuildFormSubmitActionValue(string actionName, string? chatId)
     {
         if (string.Equals(actionName, "bind_web_user_submit", StringComparison.Ordinal))
         {
@@ -256,6 +256,28 @@ public class FeishuCardActionHandler : ICallbackHandler<
             {
                 action = "fetch_project_branches",
                 project_id = projectId
+            });
+        }
+
+        if (actionName.StartsWith("rename_session_submit__", StringComparison.Ordinal))
+        {
+            var sessionId = actionName["rename_session_submit__".Length..];
+            return JsonSerializer.Serialize(new
+            {
+                action = "rename_session",
+                session_id = sessionId,
+                chat_key = chatId
+            });
+        }
+
+        if (actionName.StartsWith("save_session_launch_settings__", StringComparison.Ordinal))
+        {
+            var sessionId = actionName["save_session_launch_settings__".Length..];
+            return JsonSerializer.Serialize(new
+            {
+                action = "save_session_launch_settings",
+                session_id = sessionId,
+                chat_key = chatId
             });
         }
 
