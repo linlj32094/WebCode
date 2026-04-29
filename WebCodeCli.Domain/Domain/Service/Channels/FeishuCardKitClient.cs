@@ -411,7 +411,8 @@ public class FeishuCardKitClient : IFeishuCardKitClient
 
         var hasStatusSection = !string.IsNullOrWhiteSpace(chrome.StatusMarkdown) || chrome.OverflowOptions.Count > 0;
         var hasBottomActions = chrome.BottomActions.Count > 0;
-        if (!hasStatusSection && !hasBottomActions)
+        var hasBottomPrompt = chrome.BottomPrompt != null;
+        if (!hasStatusSection && !hasBottomActions && !hasBottomPrompt)
         {
             return
             [
@@ -469,19 +470,86 @@ public class FeishuCardKitClient : IFeishuCardKitClient
             content
         });
 
-        if (hasBottomActions)
+        if (hasBottomPrompt || hasBottomActions)
         {
             elements.Add(new { tag = "hr" });
-            elements.Add(new
+
+            if (hasBottomPrompt)
             {
-                tag = "column_set",
-                flex_mode = "none",
-                horizontal_spacing = "8px",
-                columns = BuildBottomActionColumns(chrome.BottomActions)
-            });
+                elements.Add(BuildBottomPromptForm(chrome.BottomPrompt!));
+            }
+
+            if (hasBottomActions)
+            {
+                elements.Add(new
+                {
+                    tag = "column_set",
+                    flex_mode = "none",
+                    horizontal_spacing = "8px",
+                    columns = BuildBottomActionColumns(chrome.BottomActions)
+                });
+            }
         }
 
         return elements.ToArray();
+    }
+
+    private static object BuildBottomPromptForm(FeishuStreamingCardBottomPrompt prompt)
+    {
+        return new
+        {
+            tag = "form",
+            name = string.IsNullOrWhiteSpace(prompt.FormName) ? "low_interruption_continue_form" : prompt.FormName,
+            elements = new object[]
+            {
+                new
+                {
+                    tag = "column_set",
+                    flex_mode = "none",
+                    horizontal_spacing = "8px",
+                    columns = new object[]
+                    {
+                        new
+                        {
+                            tag = "column",
+                            width = "weighted",
+                            weight = 5,
+                            vertical_align = "top",
+                            elements = new object[]
+                            {
+                                new
+                                {
+                                    tag = "input",
+                                    input_type = "text",
+                                    name = prompt.InputName,
+                                    label = new { tag = "plain_text", content = prompt.InputLabel },
+                                    placeholder = new { tag = "plain_text", content = prompt.Placeholder },
+                                    default_value = prompt.DefaultValue
+                                }
+                            }
+                        },
+                        new
+                        {
+                            tag = "column",
+                            width = "auto",
+                            vertical_align = "bottom",
+                            elements = new object[]
+                            {
+                                new
+                                {
+                                    tag = "button",
+                                    text = new { tag = "plain_text", content = prompt.ButtonText },
+                                    type = string.IsNullOrWhiteSpace(prompt.ButtonType) ? "primary" : prompt.ButtonType,
+                                    action_type = "form_submit",
+                                    name = "low_interruption_continue_submit",
+                                    value = prompt.Value
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
     }
 
     private object[] BuildOverflowOptions(IEnumerable<FeishuStreamingCardOverflowOption> options)

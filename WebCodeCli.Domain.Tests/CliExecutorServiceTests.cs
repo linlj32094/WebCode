@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using SqlSugar;
@@ -369,7 +370,52 @@ public class CliExecutorServiceTests
             chunks,
             chunk => string.Equals(
                 chunk.Content?.Trim(),
-                "Continue the existing session thread-stdin and keep executing the current task.",
+                LowInterruptionContinueDefaults.DefaultPrompt,
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExecuteLowInterruptionContinueStreamAsync_ForCodex_UsesProvidedPromptOverride()
+    {
+        var tool = new CliToolConfig
+        {
+            Id = "codex-like-stdin",
+            Name = "Codex-like stdin",
+            Command = "powershell.exe",
+            Enabled = true
+        };
+        var adapter = new RecordingCodexLowInterruptionInputAdapter();
+
+        var service = new CliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            Options.Create(new CliToolsOption
+            {
+                TempWorkspaceRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N")),
+                Tools = [tool]
+            }),
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(adapter),
+            new StubCcSwitchService());
+
+        service.SetCliThreadId("session-low-interruption-stdin", "thread-stdin");
+
+        var chunks = new List<StreamOutputChunk>();
+        await foreach (var chunk in service.ExecuteLowInterruptionContinueStreamAsync(
+                           "session-low-interruption-stdin",
+                           tool.Id,
+                           "finish the remaining backlog items",
+                           default))
+        {
+            chunks.Add(chunk);
+        }
+
+        Assert.Contains(
+            chunks,
+            chunk => string.Equals(
+                chunk.Content?.Trim(),
+                "finish the remaining backlog items",
                 StringComparison.Ordinal));
     }
 
@@ -771,6 +817,78 @@ public class CliExecutorServiceTests
                 c => !string.IsNullOrEmpty(c.Content) && c.Content.Contains("\"turn.completed\"", StringComparison.Ordinal));
             Assert.Contains(chunks, c => c.IsCompleted && !c.IsError);
             Assert.Equal(cliThreadId, service.GetCliThreadId(sessionId));
+        }
+        finally
+        {
+            service.CleanupSessionWorkspace(sessionId);
+            if (Directory.Exists(tempRoot))
+            {
+                try
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenOneTimeCodexTurnCompletedArrives_RequestsGracefulExitBeforeForcedKill()
+    {
+        const string sessionId = "session-onetime-codex-graceful-exit";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var scriptPath = Path.Combine(tempRoot, "codex-onetime-graceful-exit.cmd");
+
+        Directory.CreateDirectory(tempRoot);
+        await File.WriteAllTextAsync(
+            scriptPath,
+            """
+            @echo off
+            echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+            powershell.exe -NoProfile -Command "Start-Sleep -Seconds 10"
+            """);
+
+        var tool = new CliToolConfig
+        {
+            Id = "codex-onetime-graceful-exit",
+            Name = "Codex One-Time Graceful Exit",
+            Command = "cmd.exe",
+            ArgumentTemplate = $"/d /c \"{scriptPath}\"",
+            TimeoutSeconds = 2,
+            Enabled = true
+        };
+
+        var options = Options.Create(new CliToolsOption
+        {
+            TempWorkspaceRoot = tempRoot,
+            Tools = [tool]
+        });
+
+        var service = new TrackingGracefulExitCliExecutorService(
+            NullLogger<CliExecutorService>.Instance,
+            options,
+            NullLogger<PersistentProcessManager>.Instance,
+            new NullServiceProvider(),
+            new StubChatSessionService(),
+            new StubCliAdapterFactory(new TestCodexLikeCommandAdapter("codex-onetime-graceful-exit")),
+            new StubCcSwitchService());
+
+        try
+        {
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, tool.Id, "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.Equal(1, service.GracefulExitAttemptCount);
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(chunks, c => c.IsCompleted && !c.IsError);
         }
         finally
         {
@@ -1198,6 +1316,180 @@ public class CliExecutorServiceTests
     }
 
     [Fact]
+    public async Task SyncSessionCcSwitchSnapshotAsync_WhenCodexLiveConfigContainsClaudeMcp_RemovesItFromProjectScopedConfig()
+    {
+        const string sessionId = "session-sync-strip-claude-mcp";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        const string liveConfigContent = """
+provider = "provider-a"
+requires_openai_auth = true
+
+[mcp_servers.claude]
+type = "stdio"
+command = "claude"
+args = ["mcp", "serve"]
+""";
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+
+        try
+        {
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = []
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["codex"] = new()
+                    {
+                        ToolId = "codex",
+                        ToolName = "Codex",
+                        IsManaged = true,
+                        IsLaunchReady = true,
+                        ActiveProviderId = "provider-a",
+                        ActiveProviderName = "Provider A",
+                        ActiveProviderCategory = "custom",
+                        LiveConfigPath = liveConfigPath,
+                        StatusMessage = "Codex 已由 cc-switch 管理并可直接启动。"
+                    }
+                }));
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            var projectConfigPath = Path.Combine(workspacePath, ".codex", "config.toml");
+            var baseConfigPath = Path.Combine(workspacePath, ".codex", "config.webcode.base.toml");
+            var projectConfigContent = await File.ReadAllTextAsync(projectConfigPath);
+            var baseConfigContent = await File.ReadAllTextAsync(baseConfigPath);
+
+            Assert.DoesNotContain("[mcp_servers.claude]", projectConfigContent, StringComparison.Ordinal);
+            Assert.DoesNotContain("command = \"claude\"", projectConfigContent, StringComparison.Ordinal);
+            Assert.Contains("provider = \"provider-a\"", projectConfigContent, StringComparison.Ordinal);
+            Assert.DoesNotContain("[mcp_servers.claude]", baseConfigContent, StringComparison.Ordinal);
+            Assert.DoesNotContain("command = \"claude\"", baseConfigContent, StringComparison.Ordinal);
+            Assert.Contains("provider = \"provider-a\"", baseConfigContent, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SyncSessionCcSwitchSnapshotAsync_WhenLiveConfigDirectoryContainsAuth_SyncsThatAuthIntoProjectSnapshot()
+    {
+        const string sessionId = "session-sync-colocated-auth";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live", ".codex");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var liveAuthPath = Path.Combine(liveConfigDirectory, "auth.json");
+        var unrelatedHomePath = Path.Combine(tempRoot, "unrelated-home");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string liveAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-colocated-provider\"\n}\n";
+        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(unrelatedHomePath);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(liveAuthPath, liveAuthContent);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", null);
+            Environment.SetEnvironmentVariable("HOME", unrelatedHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", unrelatedHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools = []
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["codex"] = new()
+                    {
+                        ToolId = "codex",
+                        ToolName = "Codex",
+                        IsManaged = true,
+                        IsLaunchReady = true,
+                        ActiveProviderId = "provider-a",
+                        ActiveProviderName = "Provider A",
+                        ActiveProviderCategory = "custom",
+                        LiveConfigPath = liveConfigPath,
+                        StatusMessage = "Codex 已由 cc-switch 管理并可直接启动。"
+                    }
+                }));
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            var snapshotAuthPath = Path.Combine(workspacePath, ".codex", "auth.json");
+            Assert.True(File.Exists(snapshotAuthPath));
+            Assert.Equal(liveAuthContent, await File.ReadAllTextAsync(snapshotAuthPath));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task SyncSessionCcSwitchSnapshotAsync_WhenExplicitlyResynced_RefreshesPinnedProvider()
     {
         const string sessionId = "session-resync-snapshot";
@@ -1205,15 +1497,26 @@ public class CliExecutorServiceTests
         var workspacePath = Path.Combine(tempRoot, "workspace");
         var liveConfigDirectory = Path.Combine(tempRoot, "live");
         var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
         const string firstConfigContent = "provider = \"provider-a\"\n";
         const string secondConfigContent = "provider = \"provider-b\"\n";
+        const string firstAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-provider-a\"\n}\n";
+        const string secondAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-provider-b\"\n}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
 
         Directory.CreateDirectory(workspacePath);
         Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
         await File.WriteAllTextAsync(liveConfigPath, firstConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, firstAuthContent);
 
         try
         {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
             var repository = new StubChatSessionRepository(
             [
                 new ChatSessionEntity
@@ -1259,6 +1562,7 @@ public class CliExecutorServiceTests
             await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
 
             await File.WriteAllTextAsync(liveConfigPath, secondConfigContent);
+            await File.WriteAllTextAsync(sourceAuthPath, secondAuthContent);
             ccSwitchService.SetToolStatus("codex", new CcSwitchToolStatus
             {
                 ToolId = "codex",
@@ -1274,10 +1578,12 @@ public class CliExecutorServiceTests
 
             var refreshedSnapshot = await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
             var snapshotPath = Path.Combine(workspacePath, ".codex", "config.toml");
+            var snapshotAuthPath = Path.Combine(workspacePath, ".codex", "auth.json");
 
             Assert.NotNull(refreshedSnapshot);
             Assert.Equal("Provider B", refreshedSnapshot.ProviderName);
             Assert.Equal(secondConfigContent, await File.ReadAllTextAsync(snapshotPath));
+            Assert.Equal(secondAuthContent, await File.ReadAllTextAsync(snapshotAuthPath));
 
             var persistedSession = repository.GetById(sessionId);
             Assert.Equal("provider-b", persistedSession.CcSwitchProviderId);
@@ -1286,6 +1592,9 @@ public class CliExecutorServiceTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
             if (Directory.Exists(tempRoot))
             {
                 Directory.Delete(tempRoot, recursive: true);
@@ -1443,6 +1752,837 @@ public class CliExecutorServiceTests
         }
         finally
         {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenManagedCodexSessionHasPinnedSnapshot_UsesSessionScopedAuthSnapshot()
+    {
+        const string sessionId = "session-pinned-auth-snapshot";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string pinnedAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-pinned-provider\"\n}\n";
+        const string globalAuthAfterSwitchContent = "{\n  \"OPENAI_API_KEY\": \"sk-current-provider\"\n}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, pinnedAuthContent);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex 宸茬敱 cc-switch 绠＄悊骞跺彲鐩存帴鍚姩銆?"
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \"$authPath = Join-Path $env:USERPROFILE '.codex\\auth.json'; Write-Output (Get-Content $authPath -Raw)\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            await File.WriteAllTextAsync(sourceAuthPath, globalAuthAfterSwitchContent);
+            ccSwitchService.SetToolStatus("codex", new CcSwitchToolStatus
+            {
+                ToolId = "codex",
+                ToolName = "Codex",
+                IsManaged = true,
+                IsLaunchReady = false,
+                StatusMessage = "Codex 褰撳墠鏈湪 cc-switch 涓縺娲?Provider銆?"
+            });
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(chunks, c => c.Content.Contains("sk-pinned-provider", StringComparison.Ordinal));
+            Assert.DoesNotContain(chunks, c => c.Content.Contains("sk-current-provider", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenManagedCodexSessionHasPinnedSnapshot_SetsCodeXHomeToSessionConfigDirectory()
+    {
+        const string sessionId = "session-pinned-codex-home";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string pinnedAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-pinned-provider\"\n}\n";
+        const string globalAuthAfterSwitchContent = "{\n  \"OPENAI_API_KEY\": \"sk-current-provider\"\n}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, pinnedAuthContent);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex managed by cc-switch."
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \"Write-Output ('CODEX_HOME=' + $env:CODEX_HOME); $authPath = Join-Path $env:CODEX_HOME 'auth.json'; Write-Output (Get-Content $authPath -Raw)\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            await File.WriteAllTextAsync(sourceAuthPath, globalAuthAfterSwitchContent);
+            ccSwitchService.SetToolStatus("codex", new CcSwitchToolStatus
+            {
+                ToolId = "codex",
+                ToolName = "Codex",
+                IsManaged = true,
+                IsLaunchReady = false,
+                StatusMessage = "Codex provider switched globally."
+            });
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            var expectedCodexHome = Path.Combine(workspacePath, ".codex");
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(chunks, c => c.Content.Contains($"CODEX_HOME={expectedCodexHome}", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(chunks, c => c.Content.Contains("sk-pinned-provider", StringComparison.Ordinal));
+            Assert.DoesNotContain(chunks, c => c.Content.Contains("sk-current-provider", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenManagedCodexSessionConfigContainsClaudeMcp_RemovesItFromProjectScopedConfig()
+    {
+        const string sessionId = "session-codex-strip-claude-mcp";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        const string liveConfigContent = """
+provider = "provider-a"
+requires_openai_auth = true
+
+[mcp_servers.claude]
+type = "stdio"
+command = "claude"
+args = ["mcp", "serve"]
+""";
+        const string authContent = "{\n  \"OPENAI_API_KEY\": \"sk-pinned-provider\"\n}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, authContent);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex managed by cc-switch."
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \"$configPath = Join-Path $env:CODEX_HOME 'config.toml'; Write-Output (Get-Content $configPath -Raw)\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            var projectConfigPath = Path.Combine(workspacePath, ".codex", "config.toml");
+            var baseConfigPath = Path.Combine(workspacePath, ".codex", "config.webcode.base.toml");
+            var projectConfigContent = await File.ReadAllTextAsync(projectConfigPath);
+            var baseConfigContent = await File.ReadAllTextAsync(baseConfigPath);
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.DoesNotContain("[mcp_servers.claude]", projectConfigContent, StringComparison.Ordinal);
+            Assert.DoesNotContain("command = \"claude\"", projectConfigContent, StringComparison.Ordinal);
+            Assert.DoesNotContain("[mcp_servers.claude]", baseConfigContent, StringComparison.Ordinal);
+            Assert.DoesNotContain("command = \"claude\"", baseConfigContent, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenManagedCodexSessionResumesLegacyThread_CopiesRolloutIntoSessionCodeXHome()
+    {
+        const string sessionId = "session-codex-legacy-rollout";
+        const string cliThreadId = "019db9a3-19cf-7260-bece-1c08f337520a";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        var sourceRolloutPath = Path.Combine(
+            sourceHomePath,
+            ".codex",
+            "sessions",
+            "2026",
+            "04",
+            "23",
+            $"rollout-2026-04-23T17-19-27-{cliThreadId}.jsonl");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string pinnedAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-pinned-provider\"\n}\n";
+        const string rolloutContent = "{\"type\":\"thread.started\",\"thread_id\":\"019db9a3-19cf-7260-bece-1c08f337520a\"}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceRolloutPath)!);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, pinnedAuthContent);
+        await File.WriteAllTextAsync(sourceRolloutPath, rolloutContent);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CliThreadId = cliThreadId,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex managed by cc-switch."
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \"$rollout = Join-Path $env:CODEX_HOME 'sessions\\2026\\04\\23\\rollout-2026-04-23T17-19-27-019db9a3-19cf-7260-bece-1c08f337520a.jsonl'; Write-Output ('ROLLOUT_EXISTS=' + [bool](Test-Path $rollout)); if (Test-Path $rollout) { Write-Output (Get-Content $rollout -Raw) }\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(chunks, c => c.Content.Contains("ROLLOUT_EXISTS=True", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(chunks, c => c.Content.Contains(rolloutContent.Trim(), StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenWorkspaceRolloutAlreadyHasNewerContent_PreservesWorkspaceCopy()
+    {
+        const string sessionId = "session-codex-preserve-newer-rollout";
+        const string cliThreadId = "019db9a3-19cf-7260-bece-1c08f337520a";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        var sourceRolloutPath = Path.Combine(
+            sourceHomePath,
+            ".codex",
+            "sessions",
+            "2026",
+            "04",
+            "23",
+            $"rollout-2026-04-23T17-19-27-{cliThreadId}.jsonl");
+        var workspaceRolloutPath = Path.Combine(
+            workspacePath,
+            ".codex",
+            "sessions",
+            "2026",
+            "04",
+            "23",
+            $"rollout-2026-04-23T17-19-27-{cliThreadId}.jsonl");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string pinnedAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-pinned-provider\"\n}\n";
+        const string sourceRolloutContent = "{\"type\":\"thread.started\",\"thread_id\":\"019db9a3-19cf-7260-bece-1c08f337520a\"}\n";
+        const string workspaceRolloutContent = "{\"type\":\"thread.started\",\"thread_id\":\"019db9a3-19cf-7260-bece-1c08f337520a\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"workspace newer content\"}}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceRolloutPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(workspaceRolloutPath)!);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, pinnedAuthContent);
+        await File.WriteAllTextAsync(sourceRolloutPath, sourceRolloutContent);
+        await File.WriteAllTextAsync(workspaceRolloutPath, workspaceRolloutContent);
+        File.SetLastWriteTimeUtc(sourceRolloutPath, DateTime.UtcNow.AddMinutes(-5));
+        File.SetLastWriteTimeUtc(workspaceRolloutPath, DateTime.UtcNow);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CliThreadId = cliThreadId,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex managed by cc-switch."
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \\\"$rollout = Join-Path $env:CODEX_HOME 'sessions\\\\2026\\\\04\\\\23\\\\rollout-2026-04-23T17-19-27-019db9a3-19cf-7260-bece-1c08f337520a.jsonl'; Write-Output ('ROLLOUT_EXISTS=' + [bool](Test-Path $rollout)); if (Test-Path $rollout) { Write-Output (Get-Content $rollout -Raw) }\\\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            var syncedWorkspaceRollout = await File.ReadAllTextAsync(workspaceRolloutPath);
+            Assert.Equal(workspaceRolloutContent, syncedWorkspaceRollout);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteStreamAsync_WhenSourceRolloutHasNewerContent_UpdatesWorkspaceCopy()
+    {
+        const string sessionId = "session-codex-refresh-rollout";
+        const string cliThreadId = "019db9a3-19cf-7260-bece-1c08f337520a";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var workspacePath = Path.Combine(tempRoot, "workspace");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        var sourceRolloutPath = Path.Combine(
+            sourceHomePath,
+            ".codex",
+            "sessions",
+            "2026",
+            "04",
+            "23",
+            $"rollout-2026-04-23T17-19-27-{cliThreadId}.jsonl");
+        var workspaceRolloutPath = Path.Combine(
+            workspacePath,
+            ".codex",
+            "sessions",
+            "2026",
+            "04",
+            "23",
+            $"rollout-2026-04-23T17-19-27-{cliThreadId}.jsonl");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string pinnedAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-pinned-provider\"\n}\n";
+        const string sourceRolloutContent = "{\"type\":\"thread.started\",\"thread_id\":\"019db9a3-19cf-7260-bece-1c08f337520a\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"source newer content\"}}\n";
+        const string workspaceRolloutContent = "{\"type\":\"thread.started\",\"thread_id\":\"019db9a3-19cf-7260-bece-1c08f337520a\"}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceRolloutPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(workspaceRolloutPath)!);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, pinnedAuthContent);
+        await File.WriteAllTextAsync(sourceRolloutPath, sourceRolloutContent);
+        await File.WriteAllTextAsync(workspaceRolloutPath, workspaceRolloutContent);
+        File.SetLastWriteTimeUtc(sourceRolloutPath, DateTime.UtcNow);
+        File.SetLastWriteTimeUtc(workspaceRolloutPath, DateTime.UtcNow.AddMinutes(-5));
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = workspacePath,
+                    CliThreadId = cliThreadId,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex managed by cc-switch."
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \\\"$rollout = Join-Path $env:CODEX_HOME 'sessions\\\\2026\\\\04\\\\23\\\\rollout-2026-04-23T17-19-27-019db9a3-19cf-7260-bece-1c08f337520a.jsonl'; Write-Output ('ROLLOUT_EXISTS=' + [bool](Test-Path $rollout)); if (Test-Path $rollout) { Write-Output (Get-Content $rollout -Raw) }\\\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            var syncedWorkspaceRollout = await File.ReadAllTextAsync(workspaceRolloutPath);
+            Assert.Equal(sourceRolloutContent, syncedWorkspaceRollout);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SyncSessionCcSwitchSnapshotAsync_WhenCustomWorkspaceAlreadyHasCodexAuth_OverwritesItWithSyncedProviderAuth()
+    {
+        const string sessionId = "session-custom-workspace-auth";
+        var tempRoot = Path.Combine(Path.GetTempPath(), "WebCodeCli.Tests", Guid.NewGuid().ToString("N"));
+        var customWorkspacePath = Path.Combine(tempRoot, "MMIS-Server");
+        var liveConfigDirectory = Path.Combine(tempRoot, "live");
+        var liveConfigPath = Path.Combine(liveConfigDirectory, "config.toml");
+        var projectAuthPath = Path.Combine(customWorkspacePath, ".codex", "auth.json");
+        var sourceHomePath = Path.Combine(tempRoot, "source-home");
+        var sourceAuthPath = Path.Combine(sourceHomePath, ".codex", "auth.json");
+        const string liveConfigContent = "provider = \"provider-a\"\nrequires_openai_auth = true\n";
+        const string projectAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-project-workspace\"\n}\n";
+        const string globalAuthContent = "{\n  \"OPENAI_API_KEY\": \"sk-global-home\"\n}\n";
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(projectAuthPath)!);
+        Directory.CreateDirectory(liveConfigDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceAuthPath)!);
+        await File.WriteAllTextAsync(projectAuthPath, projectAuthContent);
+        await File.WriteAllTextAsync(liveConfigPath, liveConfigContent);
+        await File.WriteAllTextAsync(sourceAuthPath, globalAuthContent);
+
+        try
+        {
+            Environment.SetEnvironmentVariable("HOME", sourceHomePath);
+            Environment.SetEnvironmentVariable("USERPROFILE", sourceHomePath);
+
+            var repository = new StubChatSessionRepository(
+            [
+                new ChatSessionEntity
+                {
+                    SessionId = sessionId,
+                    Username = "luhaiyan",
+                    ToolId = "codex",
+                    WorkspacePath = customWorkspacePath,
+                    IsCustomWorkspace = true,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                }
+            ]);
+
+            var ccSwitchService = new StubCcSwitchService(new Dictionary<string, CcSwitchToolStatus>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["codex"] = new()
+                {
+                    ToolId = "codex",
+                    ToolName = "Codex",
+                    IsManaged = true,
+                    IsLaunchReady = true,
+                    ActiveProviderId = "provider-a",
+                    ActiveProviderName = "Provider A",
+                    ActiveProviderCategory = "custom",
+                    LiveConfigPath = liveConfigPath,
+                    StatusMessage = "Codex 宸茬敱 cc-switch 绠＄悊骞跺彲鐩存帴鍚姩銆?"
+                }
+            });
+
+            var service = new CliExecutorService(
+                NullLogger<CliExecutorService>.Instance,
+                Options.Create(new CliToolsOption
+                {
+                    TempWorkspaceRoot = tempRoot,
+                    Tools =
+                    [
+                        new CliToolConfig
+                        {
+                            Id = "codex",
+                            Name = "Codex",
+                            Command = "powershell.exe",
+                            ArgumentTemplate = "-NoProfile -Command \"$authPath = Join-Path $env:USERPROFILE '.codex\\auth.json'; Write-Output (Get-Content $authPath -Raw)\"",
+                            TimeoutSeconds = 10,
+                            Enabled = true
+                        }
+                    ]
+                }),
+                NullLogger<PersistentProcessManager>.Instance,
+                new NullServiceProvider(repository, new StubSessionOutputService()),
+                new StubChatSessionService(),
+                new StubCliAdapterFactory(),
+                ccSwitchService);
+
+            await service.SyncSessionCcSwitchSnapshotAsync(sessionId);
+
+            Assert.Equal(globalAuthContent, await File.ReadAllTextAsync(projectAuthPath));
+
+            var chunks = new List<StreamOutputChunk>();
+            await foreach (var chunk in service.ExecuteStreamAsync(sessionId, "codex", "ignored"))
+            {
+                chunks.Add(chunk);
+            }
+
+            Assert.DoesNotContain(chunks, c => c.IsError && c.IsCompleted);
+            Assert.Contains(chunks, c => c.Content.Contains("sk-global-home", StringComparison.Ordinal));
+            Assert.DoesNotContain(chunks, c => c.Content.Contains("sk-project-workspace", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("USERPROFILE", originalUserProfile);
+
             if (Directory.Exists(tempRoot))
             {
                 Directory.Delete(tempRoot, recursive: true);
@@ -1718,9 +2858,9 @@ public class CliExecutorServiceTests
         Assert.Contains("disable_response_storage = true", configContent, StringComparison.Ordinal);
         Assert.Contains("max_context = 1000000", configContent, StringComparison.Ordinal);
         Assert.Contains("context_compact_limit = 800000", configContent, StringComparison.Ordinal);
-        Assert.Contains("rmcp_client = true", configContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("rmcp_client = true", configContent, StringComparison.Ordinal);
         Assert.Contains("model_verbosity = \"high\"", configContent, StringComparison.Ordinal);
-        Assert.Contains("[mcp_servers.claude]", configContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("[mcp_servers.claude]", configContent, StringComparison.Ordinal);
         Assert.Contains("[model_providers.\"meteor-ai\"]", configContent, StringComparison.Ordinal);
         Assert.Contains("requires_openai_auth = true", configContent, StringComparison.Ordinal);
         Assert.Contains("[windows]", configContent, StringComparison.Ordinal);
@@ -2067,6 +3207,37 @@ public class CliExecutorServiceTests
         public string GetEventBadgeClass(CliOutputEvent outputEvent) => string.Empty;
 
         public string GetEventBadgeLabel(CliOutputEvent outputEvent) => string.Empty;
+    }
+
+    private sealed class TrackingGracefulExitCliExecutorService : CliExecutorService
+    {
+        public TrackingGracefulExitCliExecutorService(
+            ILogger<CliExecutorService> logger,
+            IOptions<CliToolsOption> options,
+            ILogger<PersistentProcessManager> processManagerLogger,
+            IServiceProvider serviceProvider,
+            IChatSessionService chatSessionService,
+            ICliAdapterFactory adapterFactory,
+            ICcSwitchService ccSwitchService)
+            : base(logger, options, processManagerLogger, serviceProvider, chatSessionService, adapterFactory, ccSwitchService)
+        {
+        }
+
+        public int GracefulExitAttemptCount { get; private set; }
+
+        protected override async Task<bool> TryRequestGracefulProcessExitAsync(Process process, string toolId, string sessionId)
+        {
+            GracefulExitAttemptCount++;
+
+            if (process.HasExited)
+            {
+                return true;
+            }
+
+            process.Kill(true);
+            await process.WaitForExitAsync();
+            return true;
+        }
     }
 
     private sealed class RecordingCodexLowInterruptionInputAdapter : ICliToolAdapter

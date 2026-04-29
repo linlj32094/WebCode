@@ -411,6 +411,7 @@ public class CliExecutorService : ICliExecutorService
     public async IAsyncEnumerable<StreamOutputChunk> ExecuteLowInterruptionContinueStreamAsync(
         string sessionId,
         string toolId,
+        string? prompt = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var username = ResolveUsernameForToolOperation(null, sessionId);
@@ -471,7 +472,7 @@ public class CliExecutorService : ICliExecutorService
 
         try
         {
-            await foreach (var chunk in ExecuteOneTimeProcessAsync(sessionId, tool, string.Empty, true, cancellationToken))
+            await foreach (var chunk in ExecuteOneTimeProcessAsync(sessionId, tool, string.Empty, true, prompt, cancellationToken))
             {
                 yield return chunk;
             }
@@ -515,7 +516,7 @@ public class CliExecutorService : ICliExecutorService
         else
         {
             _logger.LogInformation("【一次性进程模式】工具: {Tool}, UsePersistentProcess={Flag}", tool.Name, tool.UsePersistentProcess);
-            await foreach (var chunk in ExecuteOneTimeProcessAsync(sessionId, tool, userPrompt, false, cancellationToken))
+            await foreach (var chunk in ExecuteOneTimeProcessAsync(sessionId, tool, userPrompt, false, null, cancellationToken))
             {
                 yield return chunk;
             }
@@ -1135,6 +1136,7 @@ public class CliExecutorService : ICliExecutorService
         CliToolConfig tool,
         string userPrompt,
         bool useLowInterruption,
+        string? lowInterruptionPrompt = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var launchBlockingMessage = await GetLaunchBlockingMessageAsync(tool.Id, sessionId, cancellationToken);
@@ -1345,7 +1347,7 @@ public class CliExecutorService : ICliExecutorService
             yield break;
         }
 
-        WriteStandardInput(process, BuildStandardInput(tool, adapter, sessionContext, useLowInterruption));
+        WriteStandardInput(process, BuildStandardInput(tool, adapter, sessionContext, useLowInterruption, lowInterruptionPrompt));
         
         _logger.LogInformation("进程已启动，PID: {ProcessId}，开始读取输出流", process.Id);
 
@@ -1599,28 +1601,25 @@ public class CliExecutorService : ICliExecutorService
             return;
         }
 
-        try
+        if (await WaitForProcessExitWithinAsync(
+                process,
+                TimeSpan.FromSeconds(5),
+                toolId,
+                sessionId,
+                "等待语义终止后的进程自然退出时发生异常"))
         {
-            using var gracefulExitCts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-            await process.WaitForExitAsync(gracefulExitCts.Token);
             return;
         }
-        catch (OperationCanceledException)
+
+        if (await TryRequestGracefulProcessExitAsync(process, toolId, sessionId))
         {
-            if (process.HasExited)
-            {
-                return;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "等待语义终止后的进程自然退出时发生异常: Tool={ToolId}, Session={SessionId}", toolId, sessionId);
+            return;
         }
 
         try
         {
             _logger.LogInformation(
-                "语义终止事件已到达，但进程仍未退出，主动结束一次性进程: Tool={ToolId}, Session={SessionId}, PID={ProcessId}",
+                "语义终止事件已到达，优雅退出仍未完成，开始强制结束一次性进程: Tool={ToolId}, Session={SessionId}, PID={ProcessId}",
                 toolId,
                 sessionId,
                 process.Id);
@@ -1632,14 +1631,82 @@ public class CliExecutorService : ICliExecutorService
             return;
         }
 
+        await WaitForProcessExitWithinAsync(
+            process,
+            TimeSpan.FromSeconds(2),
+            toolId,
+            sessionId,
+            "等待被终止的一次性进程退出时发生异常");
+    }
+
+    /// <summary>
+    /// 语义完成后优先尝试温和结束 CLI，尽量给原生 history/rollout 刷盘留时间，再回退到强制结束。
+    /// </summary>
+    protected virtual async Task<bool> TryRequestGracefulProcessExitAsync(Process process, string toolId, string sessionId)
+    {
+        if (process.HasExited)
+        {
+            return true;
+        }
+
+        if (TryCloseProcessMainWindow(process, toolId, sessionId)
+            && await WaitForProcessExitWithinAsync(
+                process,
+                TimeSpan.FromSeconds(3),
+                toolId,
+                sessionId,
+                "等待主窗口关闭后进程退出时发生异常"))
+        {
+            return true;
+        }
+
+        return process.HasExited;
+    }
+
+    private async Task<bool> WaitForProcessExitWithinAsync(
+        Process process,
+        TimeSpan timeout,
+        string toolId,
+        string sessionId,
+        string logMessage)
+    {
         try
         {
-            using var killExitCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            await process.WaitForExitAsync(killExitCts.Token);
+            using var exitCts = new CancellationTokenSource(timeout);
+            await process.WaitForExitAsync(exitCts.Token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return process.HasExited;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "等待被终止的一次性进程退出时发生异常: Tool={ToolId}, Session={SessionId}", toolId, sessionId);
+            _logger.LogDebug(ex, "{LogMessage}: Tool={ToolId}, Session={SessionId}", logMessage, toolId, sessionId);
+            return process.HasExited;
+        }
+    }
+
+    private bool TryCloseProcessMainWindow(Process process, string toolId, string sessionId)
+    {
+        try
+        {
+            if (process.HasExited || !process.CloseMainWindow())
+            {
+                return false;
+            }
+
+            _logger.LogInformation(
+                "语义终止事件已到达，已请求一次性进程通过主窗口关闭退出: Tool={ToolId}, Session={SessionId}, PID={ProcessId}",
+                toolId,
+                sessionId,
+                process.Id);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "请求一次性进程通过主窗口关闭退出失败: Tool={ToolId}, Session={SessionId}", toolId, sessionId);
+            return false;
         }
     }
 
@@ -2519,7 +2586,8 @@ public class CliExecutorService : ICliExecutorService
         CliToolConfig tool,
         ICliToolAdapter? adapter,
         CliSessionContext sessionContext,
-        bool useLowInterruption)
+        bool useLowInterruption,
+        string? lowInterruptionPrompt)
     {
         if (!useLowInterruption)
         {
@@ -2528,7 +2596,9 @@ public class CliExecutorService : ICliExecutorService
 
         if (IsCodexExecution(tool, adapter))
         {
-            return $"Continue the existing session {sessionContext.CliThreadId} and keep executing the current task.";
+            return string.IsNullOrWhiteSpace(lowInterruptionPrompt)
+                ? LowInterruptionContinueDefaults.DefaultPrompt
+                : lowInterruptionPrompt.Trim();
         }
 
         return null;
@@ -2920,18 +2990,21 @@ public class CliExecutorService : ICliExecutorService
             Directory.CreateDirectory(snapshotDirectory);
         }
 
-        await using (var source = new FileStream(status.LiveConfigPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-        await using (var target = new FileStream(snapshotFullPath, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            await source.CopyToAsync(target, cancellationToken);
-        }
-
         if (string.Equals(toolId, "codex", StringComparison.OrdinalIgnoreCase))
         {
+            var liveConfigContent = await File.ReadAllTextAsync(status.LiveConfigPath, cancellationToken);
+            var sanitizedConfigContent = StripUnsupportedProjectCodexConfigSections(liveConfigContent);
+            await WriteFileIfChangedAsync(snapshotFullPath, sanitizedConfigContent, cancellationToken);
+
             var baseConfigPath = GetCodexLaunchBaseConfigPath(sessionWorkspace);
-            Directory.CreateDirectory(Path.GetDirectoryName(baseConfigPath)!);
+            await WriteFileIfChangedAsync(baseConfigPath, sanitizedConfigContent, cancellationToken);
+
+            await SyncCodexAuthSnapshotAsync(sessionWorkspace, status.LiveConfigPath, cancellationToken);
+        }
+        else
+        {
             await using var source = new FileStream(status.LiveConfigPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            await using var target = new FileStream(baseConfigPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await using var target = new FileStream(snapshotFullPath, FileMode.Create, FileAccess.Write, FileShare.None);
             await source.CopyToAsync(target, cancellationToken);
         }
 
@@ -3050,6 +3123,9 @@ public class CliExecutorService : ICliExecutorService
                 environmentVariables,
                 launchOverride,
                 cancellationToken);
+            await SyncCodexThreadArtifactsAsync(sessionWorkspace, cliThreadId, cancellationToken);
+
+            ApplyManagedCodexLaunchEnvironment(sessionWorkspace, environmentVariables);
         }
 
         return new CliSessionContext
@@ -3089,8 +3165,10 @@ public class CliExecutorService : ICliExecutorService
         else
         {
             baseContent = BuildCodexConfigContent(environmentVariables);
-            await WriteFileIfChangedAsync(baseConfigPath, baseContent, cancellationToken);
         }
+
+        baseContent = StripUnsupportedProjectCodexConfigSections(baseContent);
+        await WriteFileIfChangedAsync(baseConfigPath, baseContent, cancellationToken);
 
         var launchConfigContent = ApplyCodexLaunchOverride(baseContent, launchOverride);
         await WriteFileIfChangedAsync(codexConfigPath, launchConfigContent, cancellationToken);
@@ -3099,6 +3177,151 @@ public class CliExecutorService : ICliExecutorService
     private static string GetCodexLaunchBaseConfigPath(string sessionWorkspace)
     {
         return Path.Combine(sessionWorkspace, ".codex", CodexLaunchBaseConfigFileName);
+    }
+
+    private async Task SyncCodexAuthSnapshotAsync(
+        string sessionWorkspace,
+        string? sourceConfigPath,
+        CancellationToken cancellationToken)
+    {
+        var snapshotAuthPath = GetCodexSessionAuthPath(sessionWorkspace);
+        var sourceAuthPath = ResolveSourceCodexAuthPath(sourceConfigPath);
+        if (string.IsNullOrWhiteSpace(sourceAuthPath) || !File.Exists(sourceAuthPath))
+        {
+            if (File.Exists(snapshotAuthPath))
+            {
+                File.Delete(snapshotAuthPath);
+            }
+
+            return;
+        }
+
+        var authContent = await File.ReadAllTextAsync(sourceAuthPath, cancellationToken);
+        await WriteFileIfChangedAsync(snapshotAuthPath, authContent, cancellationToken);
+    }
+
+    private static async Task SyncCodexThreadArtifactsAsync(
+        string sessionWorkspace,
+        string? cliThreadId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(cliThreadId))
+        {
+            return;
+        }
+
+        var sourceConfigDirectory = ResolveSourceCodexConfigDirectory();
+        if (string.IsNullOrWhiteSpace(sourceConfigDirectory) || !Directory.Exists(sourceConfigDirectory))
+        {
+            return;
+        }
+
+        var targetConfigDirectory = GetCodexSessionConfigDirectory(sessionWorkspace);
+        var sourceConfigFullPath = Path.GetFullPath(sourceConfigDirectory);
+        var targetConfigFullPath = Path.GetFullPath(targetConfigDirectory);
+        var pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (string.Equals(sourceConfigFullPath, targetConfigFullPath, pathComparison))
+        {
+            return;
+        }
+
+        foreach (var rootDirectoryName in new[] { "sessions", "archived_sessions" })
+        {
+            var sourceRootDirectory = Path.Combine(sourceConfigDirectory, rootDirectoryName);
+            if (!Directory.Exists(sourceRootDirectory))
+            {
+                continue;
+            }
+
+            foreach (var sourceArtifactPath in Directory.EnumerateFiles(
+                         sourceRootDirectory,
+                         $"*{cliThreadId}*.jsonl",
+                         SearchOption.AllDirectories))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var relativeArtifactPath = Path.GetRelativePath(sourceConfigDirectory, sourceArtifactPath);
+                var targetArtifactPath = Path.Combine(targetConfigDirectory, relativeArtifactPath);
+                await CopyCodexThreadArtifactIfChangedAsync(sourceArtifactPath, targetArtifactPath, cancellationToken);
+            }
+        }
+    }
+
+    private static void ApplyManagedCodexLaunchEnvironment(
+        string sessionWorkspace,
+        Dictionary<string, string> environmentVariables)
+    {
+        environmentVariables["CODEX_HOME"] = GetCodexSessionConfigDirectory(sessionWorkspace);
+        environmentVariables["HOME"] = sessionWorkspace;
+        environmentVariables["USERPROFILE"] = sessionWorkspace;
+    }
+
+    private static string GetCodexSessionConfigDirectory(string sessionWorkspace)
+    {
+        return Path.Combine(sessionWorkspace, ".codex");
+    }
+
+    private static string GetCodexSessionAuthPath(string sessionWorkspace)
+    {
+        return Path.Combine(GetCodexSessionConfigDirectory(sessionWorkspace), "auth.json");
+    }
+
+    private static string ResolveSourceCodexAuthPath(string? sourceConfigPath = null)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceConfigPath))
+        {
+            var sourceConfigDirectory = Path.GetDirectoryName(sourceConfigPath);
+            if (!string.IsNullOrWhiteSpace(sourceConfigDirectory))
+            {
+                var colocatedAuthPath = Path.Combine(sourceConfigDirectory, "auth.json");
+                if (File.Exists(colocatedAuthPath))
+                {
+                    return colocatedAuthPath;
+                }
+            }
+        }
+
+        var codexConfigDirectory = ResolveSourceCodexConfigDirectory();
+        return string.IsNullOrWhiteSpace(codexConfigDirectory)
+            ? string.Empty
+            : Path.Combine(codexConfigDirectory, "auth.json");
+    }
+
+    private static string ResolveSourceCodexConfigDirectory()
+    {
+        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (!string.IsNullOrWhiteSpace(codexHome))
+        {
+            return NormalizeCodexConfigDirectory(codexHome);
+        }
+
+        var homePath = Environment.GetEnvironmentVariable("HOME");
+        if (string.IsNullOrWhiteSpace(homePath))
+        {
+            homePath = Environment.GetEnvironmentVariable("USERPROFILE");
+        }
+
+        if (string.IsNullOrWhiteSpace(homePath))
+        {
+            homePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+
+        return string.IsNullOrWhiteSpace(homePath)
+            ? string.Empty
+            : NormalizeCodexConfigDirectory(homePath);
+    }
+
+    private static string NormalizeCodexConfigDirectory(string basePath)
+    {
+        if (string.IsNullOrWhiteSpace(basePath))
+        {
+            return string.Empty;
+        }
+
+        var trimmedPath = basePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(Path.GetFileName(trimmedPath), ".codex", StringComparison.OrdinalIgnoreCase)
+            ? trimmedPath
+            : Path.Combine(trimmedPath, ".codex");
     }
 
     private static string ApplyCodexLaunchOverride(string baseContent, SessionToolLaunchOverride? launchOverride)
@@ -3120,6 +3343,45 @@ public class CliExecutorService : ICliExecutorService
         }
 
         return mergedContent;
+    }
+
+    private static string StripUnsupportedProjectCodexConfigSections(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return content;
+        }
+
+        var normalizedContent = content.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var lines = normalizedContent.Split('\n');
+        var keptLines = new List<string>(lines.Length);
+        var skipCurrentSection = false;
+
+        foreach (var line in lines)
+        {
+            var trimmedLine = line.Trim();
+            if (trimmedLine.StartsWith("[", StringComparison.Ordinal) && trimmedLine.EndsWith("]", StringComparison.Ordinal))
+            {
+                var sectionName = trimmedLine[1..^1].Trim();
+                skipCurrentSection = string.Equals(sectionName, "mcp_servers.claude", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (skipCurrentSection)
+            {
+                continue;
+            }
+
+            keptLines.Add(line);
+        }
+
+        var sanitizedContent = string.Join("\n", keptLines);
+        sanitizedContent = Regex.Replace(sanitizedContent, @"\n{3,}", "\n\n", RegexOptions.CultureInvariant);
+        if (content.EndsWith("\r\n", StringComparison.Ordinal))
+        {
+            sanitizedContent = sanitizedContent.Replace("\n", "\r\n", StringComparison.Ordinal);
+        }
+
+        return sanitizedContent.TrimEnd('\r', '\n') + Environment.NewLine;
     }
 
     private static string UpsertTomlStringSetting(string content, string key, string value)
@@ -3165,6 +3427,59 @@ public class CliExecutorService : ICliExecutorService
         }
 
         await File.WriteAllTextAsync(path, content, cancellationToken);
+    }
+
+    private static async Task CopyCodexThreadArtifactIfChangedAsync(
+        string sourcePath,
+        string targetPath,
+        CancellationToken cancellationToken)
+    {
+        var targetDirectory = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrWhiteSpace(targetDirectory))
+        {
+            Directory.CreateDirectory(targetDirectory);
+        }
+
+        var sourceContent = await File.ReadAllTextAsync(sourcePath, cancellationToken);
+        if (File.Exists(targetPath))
+        {
+            var targetContent = await File.ReadAllTextAsync(targetPath, cancellationToken);
+            if (string.Equals(sourceContent, targetContent, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (IsArtifactContentContinuation(targetContent, sourceContent))
+            {
+                return;
+            }
+
+            if (!IsArtifactContentContinuation(sourceContent, targetContent))
+            {
+                var sourceLastWriteUtc = File.GetLastWriteTimeUtc(sourcePath);
+                var targetLastWriteUtc = File.GetLastWriteTimeUtc(targetPath);
+                if (targetLastWriteUtc > sourceLastWriteUtc
+                    || (targetLastWriteUtc == sourceLastWriteUtc && targetContent.Length >= sourceContent.Length))
+                {
+                    return;
+                }
+            }
+        }
+
+        await using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        await using var target = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
+        await source.CopyToAsync(target, cancellationToken);
+    }
+
+    private static bool IsArtifactContentContinuation(string candidateContent, string baselineContent)
+    {
+        if (string.IsNullOrEmpty(candidateContent) || string.IsNullOrEmpty(baselineContent))
+        {
+            return false;
+        }
+
+        return candidateContent.Length > baselineContent.Length
+               && candidateContent.StartsWith(baselineContent, StringComparison.Ordinal);
     }
 
     private bool HasCcSwitchSnapshotForTool(ChatSessionEntity? session, string toolId)
@@ -3732,16 +4047,10 @@ context_compact_limit = {contextCompactLimit}
 approval_policy = ""{approvalPolicy}""
 sandbox_mode = ""{sandboxMode}""
 
-rmcp_client = true
 model_reasoning_effort = ""{reasoningEffort}""
 model_reasoning_summary = ""{reasoningSummary}""
 model_verbosity = ""{modelVerbosity}""
 model_supports_reasoning_summaries = true
-
-[mcp_servers.claude]
-type = ""stdio""
-command = ""claude""
-args = [""mcp"", ""serve""]
 
 [model_providers.""{providerId}""]
 name = ""{providerName}""

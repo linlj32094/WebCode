@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using WebCodeCli.Domain.Domain.Model;
 using WebCodeCli.Domain.Domain.Model.Channels;
 using WebCodeCli.Domain.Domain.Service.Adapters;
 
@@ -8,6 +9,7 @@ internal static partial class LowInterruptionContinueHelper
 {
     public const string ActionName = "low_interruption_continue";
     public const string ButtonLabel = "少打断执行";
+    public const string PromptLabel = "少打断提示词";
 
     public static bool HasStructuredTodoList(CliOutputEvent? outputEvent)
     {
@@ -43,6 +45,26 @@ internal static partial class LowInterruptionContinueHelper
         {
             Text = ButtonLabel,
             Type = "primary",
+            Value = new
+            {
+                action = ActionName,
+                session_id = sessionId,
+                chat_key = chatKey,
+                tool_id = toolId
+            }
+        };
+    }
+
+    public static FeishuStreamingCardBottomPrompt CreateBottomPrompt(string sessionId, string chatKey, string toolId)
+    {
+        return new FeishuStreamingCardBottomPrompt
+        {
+            InputName = LowInterruptionContinueDefaults.PromptFieldName,
+            InputLabel = PromptLabel,
+            Placeholder = LowInterruptionContinueDefaults.PromptPlaceholder,
+            DefaultValue = LowInterruptionContinueDefaults.DefaultPrompt,
+            ButtonText = ButtonLabel,
+            ButtonType = "primary",
             Value = new
             {
                 action = ActionName,

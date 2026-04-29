@@ -300,12 +300,13 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             }
 
             var toolId = ResolveToolId(message.ChatId, message.SenderName);
+            var normalizedPrompt = FeishuPromptNormalizer.Normalize(message.Content);
 
             // 娣诲姞鐢ㄦ埛娑堟伅鍒颁細璇?
             _chatSessionService.AddMessage(sessionId, new ChatMessage
             {
                 Role = "user",
-                Content = message.Content,
+                Content = normalizedPrompt,
                 CliToolId = toolId,
                 CreatedAt = DateTime.UtcNow
             });
@@ -341,7 +342,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
                 await SupersedeExecutionAsync(previousExecution, message.MessageId);
             }
 
-            var cliPrompt = message.Content;
+            var cliPrompt = normalizedPrompt;
 
             try
             {

@@ -19,6 +19,11 @@ public sealed class FeishuStreamingCardChrome
     /// 鍗＄墖搴曢儴鍔ㄤ綔鎸夐挳
     /// </summary>
     public List<FeishuStreamingCardBottomAction> BottomActions { get; set; } = [];
+
+    /// <summary>
+    /// 卡片底部少打断执行提示词表单
+    /// </summary>
+    public FeishuStreamingCardBottomPrompt? BottomPrompt { get; set; }
 }
 
 internal static class FeishuStreamingStatusFormatter
@@ -115,5 +120,27 @@ public sealed class FeishuStreamingCardBottomAction
     /// <summary>
     /// 鐐瑰嚮鍚庡洖浼犵殑鍔ㄤ綔鍊?
     /// </summary>
+    public object Value { get; set; } = new { };
+}
+
+/// <summary>
+/// 流式卡片底部提示词表单
+/// </summary>
+public sealed class FeishuStreamingCardBottomPrompt
+{
+    public string FormName { get; set; } = "low_interruption_continue_form";
+
+    public string InputName { get; set; } = string.Empty;
+
+    public string InputLabel { get; set; } = string.Empty;
+
+    public string Placeholder { get; set; } = string.Empty;
+
+    public string DefaultValue { get; set; } = string.Empty;
+
+    public string ButtonText { get; set; } = string.Empty;
+
+    public string ButtonType { get; set; } = "primary";
+
     public object Value { get; set; } = new { };
 }

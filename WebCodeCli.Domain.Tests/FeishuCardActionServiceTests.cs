@@ -181,10 +181,12 @@ public class FeishuCardActionServiceTests
 
         Assert.NotNull(cardKit.LastStreamingChrome);
         var chrome = cardKit.LastStreamingChrome!;
-        var bottomAction = Assert.Single(chrome.BottomActions);
-        Assert.Equal("少打断执行", bottomAction.Text);
+        Assert.NotNull(chrome.BottomPrompt);
+        var bottomPrompt = chrome.BottomPrompt!;
+        Assert.Equal("少打断执行", bottomPrompt.ButtonText);
+        Assert.Equal(LowInterruptionContinueDefaults.DefaultPrompt, bottomPrompt.DefaultValue);
 
-        var valueJson = JsonSerializer.Serialize(bottomAction.Value);
+        var valueJson = JsonSerializer.Serialize(bottomPrompt.Value);
         Assert.Contains("\"action\":\"low_interruption_continue\"", valueJson);
         Assert.Contains($"\"session_id\":\"{activeSessionId}\"", valueJson);
         Assert.Contains($"\"chat_key\":\"{chatId}\"", valueJson);
@@ -219,8 +221,8 @@ public class FeishuCardActionServiceTests
 
         Assert.NotNull(cardKit.LastStreamingChrome);
         var chrome = cardKit.LastStreamingChrome!;
-        var bottomAction = Assert.Single(chrome.BottomActions);
-        var valueJson = JsonSerializer.Serialize(bottomAction.Value);
+        Assert.NotNull(chrome.BottomPrompt);
+        var valueJson = JsonSerializer.Serialize(chrome.BottomPrompt!.Value);
         Assert.Contains("\"action\":\"low_interruption_continue\"", valueJson);
         Assert.Contains($"\"session_id\":\"{activeSessionId}\"", valueJson);
     }
@@ -265,14 +267,14 @@ public class FeishuCardActionServiceTests
 
         Assert.NotNull(cardKit.LastStreamingChrome);
         var chrome = cardKit.LastStreamingChrome!;
-        var bottomAction = Assert.Single(chrome.BottomActions);
-        var valueJson = JsonSerializer.Serialize(bottomAction.Value);
+        Assert.NotNull(chrome.BottomPrompt);
+        var valueJson = JsonSerializer.Serialize(chrome.BottomPrompt!.Value);
         Assert.Contains("\"action\":\"low_interruption_continue\"", valueJson);
         Assert.Contains($"\"session_id\":\"{activeSessionId}\"", valueJson);
     }
 
     [Fact]
-    public async Task HandleCardActionAsync_LowInterruptionContinue_StartsNewStreamingCardWithoutPromptInjection()
+    public async Task HandleCardActionAsync_LowInterruptionContinue_StartsNewStreamingCardWithDefaultPromptForm()
     {
         const string chatId = "oc_current_chat";
         const string sessionId = "session-low-interruption-run";
@@ -302,6 +304,43 @@ public class FeishuCardActionServiceTests
         Assert.Empty(cliExecutor.ExecutedPrompts);
         Assert.Equal([sessionId], cliExecutor.LowInterruptionSessionIds);
         Assert.NotNull(cardKit.LastStreamingChrome);
+        Assert.NotNull(cardKit.LastStreamingChrome!.BottomPrompt);
+        Assert.Equal(LowInterruptionContinueDefaults.DefaultPrompt, cardKit.LastStreamingChrome.BottomPrompt!.DefaultValue);
+    }
+
+    [Fact]
+    public async Task HandleCardActionAsync_LowInterruptionContinue_PassesPromptFromFormValue()
+    {
+        const string chatId = "oc_current_chat";
+        const string sessionId = "session-low-interruption-run";
+
+        var cliExecutor = new RecordingCliExecutorService
+        {
+            SupportsLowInterruption = true,
+            LowInterruptionExecutionContent = "backlog remains"
+        };
+        cliExecutor.SetCliThreadId(sessionId, "thread-low-interruption");
+        cliExecutor.SetSessionWorkspacePath(sessionId, @"D:\repo\superpowers");
+
+        var cardKit = new StubFeishuCardKitClient();
+        var feishuChannel = new StubFeishuChannelService(sessionId);
+        var service = CreateService(cliExecutor, feishuChannel, new TestServiceProvider(), cardKit);
+
+        var response = await service.HandleCardActionAsync(
+            """{"action":"low_interruption_continue","session_id":"session-low-interruption-run","chat_key":"oc_current_chat","tool_id":"codex"}""",
+            chatId: chatId,
+            formValue: new Dictionary<string, object>
+            {
+                [LowInterruptionContinueDefaults.PromptFieldName] = "finish the remaining plan items"
+            });
+
+        Assert.Equal(CardActionTriggerResponseDto.ToastSuffix.ToastType.Info, response.Toast?.Type);
+
+        var usedSessionId = await cliExecutor.WaitForLowInterruptionExecutionAsync(TimeSpan.FromSeconds(3));
+        await feishuChannel.WaitForMessageAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(sessionId, usedSessionId);
+        Assert.Equal(["finish the remaining plan items"], cliExecutor.LowInterruptionPrompts);
     }
 
     [Fact]
@@ -996,8 +1035,62 @@ public class FeishuCardActionServiceTests
         Assert.False(cliExecutor.WasExecuted);
         Assert.Equal("codex", historyService.LastToolId);
         Assert.Equal("codex-thread-1", historyService.LastCliThreadId);
+        Assert.Equal(50, historyService.LastMaxCount);
         Assert.Contains("你好", sent.Content);
         Assert.Contains("世界", sent.Content);
+    }
+
+    [Fact]
+    public async Task HandleCardActionAsync_ExecuteCommand_HistoryCommand_RespectsRequestedMessageLimit()
+    {
+        const string chatId = "oc_current_chat";
+        const string sessionId = "session-history-limit";
+
+        var cliExecutor = new RecordingCliExecutorService();
+        var feishuChannel = new StubFeishuChannelService(sessionId);
+        var historyService = new StubExternalCliSessionHistoryService(
+        [
+            new ExternalCliHistoryMessage { Role = "user", Content = "第一条" },
+            new ExternalCliHistoryMessage { Role = "assistant", Content = "第二条" },
+            new ExternalCliHistoryMessage { Role = "user", Content = "第三条" }
+        ]);
+
+        var sessionRepository = new StubChatSessionRepository(
+        [
+            new ChatSessionEntity
+            {
+                SessionId = sessionId,
+                Username = "luhaiyan",
+                ToolId = "codex",
+                CliThreadId = "codex-thread-limit",
+                WorkspacePath = @"D:\repo",
+                FeishuChatKey = chatId,
+                IsWorkspaceValid = true,
+                IsFeishuActive = true,
+                CreatedAt = DateTime.Now,
+                UpdatedAt = DateTime.Now
+            }
+        ]);
+
+        var service = CreateService(
+            cliExecutor,
+            feishuChannel,
+            new TestServiceProvider(
+                chatSessionRepository: sessionRepository,
+                externalCliSessionHistoryService: historyService));
+
+        await service.HandleCardActionAsync(
+            """{"action":"execute_command"}""",
+            chatId: chatId,
+            inputValues: "/history 2");
+
+        var sent = await feishuChannel.WaitForMessageAsync(TimeSpan.FromSeconds(3));
+
+        Assert.False(cliExecutor.WasExecuted);
+        Assert.Equal(2, historyService.LastMaxCount);
+        Assert.Contains("第二条", sent.Content);
+        Assert.Contains("第三条", sent.Content);
+        Assert.DoesNotContain("第一条", sent.Content);
     }
 
     [Fact]
@@ -2014,6 +2107,8 @@ public class FeishuCardActionServiceTests
 
         public List<string> LowInterruptionSessionIds { get; } = new();
 
+        public List<string?> LowInterruptionPrompts { get; } = new();
+
         public List<(string SessionId, string? ToolId)> SyncRequests { get; } = new();
 
         public List<(string SessionId, bool ClearCliThreadId)> ResetRequests { get; } = new();
@@ -2108,9 +2203,11 @@ public class FeishuCardActionServiceTests
         public async IAsyncEnumerable<StreamOutputChunk> ExecuteLowInterruptionContinueStreamAsync(
             string sessionId,
             string toolId,
+            string? prompt = null,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             LowInterruptionSessionIds.Add(sessionId);
+            LowInterruptionPrompts.Add(prompt);
             _lowInterruptionExecutionStarted.TrySetResult(sessionId);
             yield return new StreamOutputChunk
             {
@@ -2406,15 +2503,65 @@ public class FeishuCardActionServiceTests
 
         public string? LastCliThreadId { get; private set; }
 
+        public int LastMaxCount { get; private set; }
+
         public Task<List<ExternalCliHistoryMessage>> GetRecentMessagesAsync(
             string toolId,
             string cliThreadId,
             int maxCount = 20,
+            string? workspacePath = null,
             CancellationToken cancellationToken = default)
         {
             LastToolId = toolId;
             LastCliThreadId = cliThreadId;
-            return Task.FromResult(_messages.Take(maxCount).ToList());
+            LastMaxCount = maxCount;
+            return Task.FromResult(_messages.TakeLast(maxCount).ToList());
+        }
+    }
+
+    [Fact]
+    public async Task HandleCardActionAsync_ExecuteCommand_NormalizesFeishuPostJsonPromptBeforeExecution()
+    {
+        const string chatId = "oc_current_chat";
+        const string activeSessionId = "session-acp";
+
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-card-post-json-{Guid.NewGuid():N}");
+        var workspacePath = Path.Combine(workspaceRoot, "superpowers");
+        Directory.CreateDirectory(workspacePath);
+
+        const string rawPostJson = """
+{"zh_cn":{"title":"WhereAuto","content":[[{"tag":"text","text":"最终框架形态。"}],[{"tag":"text","text":"更合理的是把事务边界提升到 Application 命令层。"}],[{"tag":"text","text":"再用superpowers技能讨论下怎么实现这些内容。"}]]}}
+""";
+        const string expectedPrompt = """
+# WhereAuto
+
+最终框架形态。
+更合理的是把事务边界提升到 Application 命令层。
+再用superpowers技能讨论下怎么实现这些内容。
+""";
+
+        try
+        {
+            var cliExecutor = new RecordingCliExecutorService();
+            cliExecutor.SetSessionWorkspacePath(activeSessionId, workspacePath);
+
+            var feishuChannel = new StubFeishuChannelService(activeSessionId);
+            var service = CreateService(cliExecutor, feishuChannel, new TestServiceProvider());
+
+            await service.HandleCardActionAsync(
+                """{"action":"execute_command"}""",
+                chatId: chatId,
+                operatorUserId: "ou_test_user",
+                inputValues: rawPostJson);
+
+            await cliExecutor.WaitForExecutionAsync(TimeSpan.FromSeconds(3));
+
+            var prompt = Assert.Single(cliExecutor.ExecutedPrompts);
+            Assert.Equal(expectedPrompt.Replace("\n", Environment.NewLine, StringComparison.Ordinal), prompt);
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
         }
     }
 

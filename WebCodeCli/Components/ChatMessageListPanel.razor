@@ -86,7 +86,14 @@
             </div>
             @if (ShouldShowLowInterruptionContinue(message))
             {
-                <div class="mt-3 flex justify-end">
+                <div class="mt-3 flex flex-col items-stretch gap-2 sm:flex-row sm:items-end sm:justify-end">
+                    <div class="w-full sm:max-w-xl">
+                        <input @bind="LowInterruptionContinuePrompt"
+                               @bind:event="oninput"
+                               disabled="@LowInterruptionContinueDisabled"
+                               class="w-full rounded-lg border border-blue-200 px-3 py-2 text-xs sm:text-sm text-gray-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                               placeholder="@LowInterruptionContinuePromptPlaceholder" />
+                    </div>
                     <button @onclick="@(() => OnLowInterruptionContinue.InvokeAsync(message))"
                             disabled="@LowInterruptionContinueDisabled"
                             class="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 px-3 py-1.5 text-xs sm:text-sm font-medium transition-colors @(LowInterruptionContinueDisabled ? "cursor-not-allowed bg-gray-100 text-gray-400 border-gray-200" : "bg-blue-50 text-blue-700 hover:bg-blue-100")">
@@ -239,6 +246,9 @@
     [Parameter] public string? LowInterruptionContinueMessageId { get; set; }
     [Parameter] public bool LowInterruptionContinueDisabled { get; set; }
     [Parameter] public string LowInterruptionContinueText { get; set; } = string.Empty;
+    [Parameter] public string LowInterruptionContinuePrompt { get; set; } = LowInterruptionContinueDefaults.DefaultPrompt;
+    [Parameter] public string LowInterruptionContinuePromptPlaceholder { get; set; } = LowInterruptionContinueDefaults.PromptPlaceholder;
+    [Parameter] public EventCallback<string> LowInterruptionContinuePromptChanged { get; set; }
     [Parameter] public EventCallback<ChatMessage> OnLowInterruptionContinue { get; set; }
 
     private string? _copiedMessageId = null;

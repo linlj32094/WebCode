@@ -346,6 +346,77 @@ public class FeishuChannelServiceTests
     }
 
     [Fact]
+    public async Task HandleIncomingMessageAsync_NormalizesFeishuPostJsonPromptBeforePersistAndExecute()
+    {
+        var repository = CreateRepository(out var repositoryProxy);
+        var sessionDirectoryService = new RecordingSessionDirectoryService(repositoryProxy);
+        var cardKit = new StreamingRecordingFeishuCardKitClient();
+        var chatSessionService = new RecordingChatSessionService();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-post-json-{Guid.NewGuid():N}");
+        var workspacePath = Path.Combine(workspaceRoot, "superpowers");
+        Directory.CreateDirectory(workspacePath);
+        var cliExecutor = new PromptCapturingCliExecutor(workspacePath);
+        var serviceProvider = new TestServiceProvider(
+            repository,
+            sessionDirectoryService,
+            new StubFeishuUserBindingService(),
+            new StubUserFeishuBotConfigService(),
+            new StubUserContextService());
+
+        var service = new FeishuChannelService(
+            Options.Create(new FeishuOptions
+            {
+                Enabled = true,
+                AppId = "cli_test",
+                AppSecret = "secret"
+            }),
+            NullLogger<FeishuChannelService>.Instance,
+            cardKit,
+            serviceProvider,
+            cliExecutor,
+            chatSessionService);
+
+        const string rawPostJson = """
+{"zh_cn":{"title":"事务边界","content":[[{"tag":"text","text":"最终框架形态。"}],[{"tag":"text","text":"更合理的是把事务边界提升到 Application 命令层。"}],[{"tag":"text","text":"再用superpowers技能讨论下怎么实现这些内容。"}]]}}
+""";
+        const string expectedPrompt = """
+# 事务边界
+
+最终框架形态。
+更合理的是把事务边界提升到 Application 命令层。
+再用superpowers技能讨论下怎么实现这些内容。
+""";
+
+        try
+        {
+            var sessionId = service.CreateNewSession(
+                new FeishuIncomingMessage
+                {
+                    ChatId = "oc_post_json_chat",
+                    SenderName = "luhaiyan"
+                },
+                workspacePath,
+                "codex");
+
+            await service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_post_json_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-post-json",
+                Content = rawPostJson
+            });
+
+            var call = Assert.Single(cliExecutor.ExecuteCalls);
+            Assert.Equal(expectedPrompt.Replace("\n", Environment.NewLine, StringComparison.Ordinal), call.Prompt);
+            Assert.Contains(chatSessionService.Messages[sessionId], message => message.Role == "user" && message.Content == call.Prompt);
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HandleIncomingMessageAsync_IncludesSessionLaunchOverridesInStatusChromeAndCompletionText()
     {
         var repository = CreateRepository(out var repositoryProxy);
@@ -1161,6 +1232,7 @@ public class FeishuChannelServiceTests
         public async IAsyncEnumerable<StreamOutputChunk> ExecuteLowInterruptionContinueStreamAsync(
             string sessionId,
             string toolId,
+            string? prompt = null,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             yield return new StreamOutputChunk
@@ -1306,6 +1378,7 @@ public class FeishuChannelServiceTests
         public async IAsyncEnumerable<StreamOutputChunk> ExecuteLowInterruptionContinueStreamAsync(
             string sessionId,
             string toolId,
+            string? prompt = null,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             yield return new StreamOutputChunk

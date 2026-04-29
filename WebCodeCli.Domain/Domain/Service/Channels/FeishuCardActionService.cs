@@ -153,7 +153,7 @@ public class FeishuCardActionService
                 case "execute_command":
                     return await HandleExecuteCommandAsync(formValueElement, action.Command, chatId, operatorUserId, inputValues, appId);
                 case LowInterruptionContinueHelper.ActionName:
-                    return await HandleLowInterruptionContinueAsync(action.SessionId, action.ChatKey ?? chatId, action.ToolId, operatorUserId, appId);
+                    return await HandleLowInterruptionContinueAsync(action.SessionId, action.ChatKey ?? chatId, action.ToolId, formValueElement, operatorUserId, appId);
                 case "switch_session":
                     return await HandleSwitchSessionAsync(action.SessionId, action.ChatKey, operatorUserId, appId);
                 case "sync_session_provider":
@@ -383,7 +383,7 @@ public class FeishuCardActionService
                 try
                 {
                     var username = ResolveFeishuUsername(chatId.ToLowerInvariant(), operatorUserId);
-                    await SendExternalCliHistoryAsync(currentSessionId, actualChatKey, username, appId);
+                    await SendExternalCliHistoryAsync(currentSessionId, actualChatKey, username, appId, commandInput: commandInput);
                 }
                 catch (Exception ex)
                 {
@@ -409,13 +409,13 @@ public class FeishuCardActionService
                 // 获取或创建会话
                 var toolId = ResolveToolIdForChat(chatId);
                 var sessionId = GetOrCreateSession(chatId, toolId);
-                var cliPrompt = commandInput;
+                var cliPrompt = FeishuPromptNormalizer.Normalize(commandInput);
 
                 // 添加用户消息到会话
                 _chatSessionService.AddMessage(sessionId, new Domain.Model.ChatMessage
                 {
                     Role = "user",
-                    Content = commandInput,
+                    Content = cliPrompt,
                     CliToolId = toolId,
                     CreatedAt = DateTime.Now
                 });
@@ -459,6 +459,7 @@ public class FeishuCardActionService
         string? sessionId,
         string? chatKey,
         string? toolId,
+        JsonElement? formValue,
         string? operatorUserId,
         string? appId)
     {
@@ -492,6 +493,7 @@ public class FeishuCardActionService
         }
 
         var toastResponse = _cardBuilder.BuildCardActionToastOnlyResponse("🚀 已开始少打断执行...", "info");
+        var prompt = GetFormStringValue(formValue, LowInterruptionContinueDefaults.PromptFieldName)?.Trim();
 
         _ = Task.Run(async () =>
         {
@@ -514,6 +516,7 @@ public class FeishuCardActionService
                     baseStatusMarkdown,
                     sessionId,
                     effectiveToolId,
+                    prompt,
                     actualChatKey,
                     effectiveOptions.ThinkingMessage);
             }
@@ -795,6 +798,7 @@ public class FeishuCardActionService
         string baseStatusMarkdown,
         string sessionId,
         string toolId,
+        string? prompt,
         string chatId,
         string thinkingMessage)
     {
@@ -830,7 +834,7 @@ public class FeishuCardActionService
 
         try
         {
-            await foreach (var chunk in _cliExecutor.ExecuteLowInterruptionContinueStreamAsync(sessionId, tool.Id))
+            await foreach (var chunk in _cliExecutor.ExecuteLowInterruptionContinueStreamAsync(sessionId, tool.Id, prompt))
             {
                 if (chunk.IsError)
                 {
@@ -971,10 +975,10 @@ public class FeishuCardActionService
         }
 
         streamingChrome.BottomActions.Clear();
-        streamingChrome.BottomActions.Add(LowInterruptionContinueHelper.CreateBottomAction(
+        streamingChrome.BottomPrompt = LowInterruptionContinueHelper.CreateBottomPrompt(
             sessionId,
             NormalizeChatKey(chatId),
-            normalizedToolId));
+            normalizedToolId);
     }
 
     private async Task RunStreamingStatusPulseAsync(
@@ -1419,7 +1423,8 @@ public class FeishuCardActionService
         string? appId,
         DateTime? lastActiveTime = null,
         string? workspacePath = null,
-        string? toolLabel = null)
+        string? toolLabel = null,
+        string? commandInput = null)
     {
         using var scope = _serviceProvider.CreateScope();
         var detailRepo = scope.ServiceProvider.GetRequiredService<IChatSessionRepository>();
@@ -1447,7 +1452,12 @@ public class FeishuCardActionService
             normalizedToolId,
             cliThreadId);
 
-        var messages = await historyService.GetRecentMessagesAsync(normalizedToolId, cliThreadId, maxCount: 10);
+        var historyLimit = ResolveHistoryCommandLimit(commandInput);
+        var messages = await historyService.GetRecentMessagesAsync(
+            normalizedToolId,
+            cliThreadId,
+            maxCount: historyLimit,
+            workspacePath: sessionEntity.WorkspacePath);
         var content = BuildExternalCliHistoryText(
             sessionId,
             toolLabel ?? GetToolDisplayName(sessionEntity.ToolId),
@@ -1488,7 +1498,10 @@ public class FeishuCardActionService
             return builder.ToString().TrimEnd();
         }
 
-        foreach (var message in messages.TakeLast(10))
+        builder.AppendLine($"显示条数: 最近 {messages.Count} 条");
+        builder.AppendLine();
+
+        foreach (var message in messages)
         {
             var roleLabel = string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase)
                 ? "用户"
@@ -1530,6 +1543,35 @@ public class FeishuCardActionService
         var trimmed = commandInput.Trim();
         return string.Equals(trimmed, "/history", StringComparison.OrdinalIgnoreCase)
                || trimmed.StartsWith("/history ", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int ResolveHistoryCommandLimit(string? commandInput)
+    {
+        const int defaultLimit = 50;
+        const int maxLimit = 200;
+
+        if (string.IsNullOrWhiteSpace(commandInput))
+        {
+            return defaultLimit;
+        }
+
+        var segments = commandInput
+            .Trim()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 2)
+        {
+            return defaultLimit;
+        }
+
+        var requestedLimit = segments[1];
+        if (string.Equals(requestedLimit, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            return maxLimit;
+        }
+
+        return int.TryParse(requestedLimit, out var parsedLimit)
+            ? Math.Clamp(parsedLimit, 1, maxLimit)
+            : defaultLimit;
     }
 
     /// <summary>

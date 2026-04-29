@@ -4,6 +4,7 @@ using FeishuNetSdk.Im.Dtos;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using WebCodeCli.Domain.Common.Options;
+using WebCodeCli.Domain.Domain.Model;
 using WebCodeCli.Domain.Domain.Model.Channels;
 using WebCodeCli.Domain.Domain.Service.Channels;
 
@@ -198,7 +199,7 @@ public class FeishuCardKitClientTests
     }
 
     [Fact]
-    public async Task CreateStreamingHandleAsync_RendersBottomActionButtons()
+    public async Task CreateStreamingHandleAsync_RendersBottomPromptForm()
     {
         var handler = new StubHttpMessageHandler(
         [
@@ -212,10 +213,14 @@ public class FeishuCardKitClientTests
         {
             StatusMarkdown = "当前会话"
         };
-        chrome.BottomActions.Add(new FeishuStreamingCardBottomAction
+        chrome.BottomPrompt = new FeishuStreamingCardBottomPrompt
         {
-            Text = "少打断执行",
-            Type = "primary",
+            InputName = LowInterruptionContinueDefaults.PromptFieldName,
+            InputLabel = "少打断提示词",
+            Placeholder = LowInterruptionContinueDefaults.PromptPlaceholder,
+            DefaultValue = LowInterruptionContinueDefaults.DefaultPrompt,
+            ButtonText = "少打断执行",
+            ButtonType = "primary",
             Value = new
             {
                 action = "low_interruption_continue",
@@ -223,7 +228,7 @@ public class FeishuCardKitClientTests
                 chat_key = "oc_stream_chat",
                 tool_id = "codex"
             }
-        });
+        };
 
         await client.CreateStreamingHandleAsync(
             "oc_stream_chat",
@@ -238,13 +243,22 @@ public class FeishuCardKitClientTests
         var elements = cardDoc.RootElement.GetProperty("body").GetProperty("elements");
         var bottomActionModule = elements.EnumerateArray().Last();
 
-        Assert.Equal("column_set", bottomActionModule.GetProperty("tag").GetString());
+        Assert.Equal("form", bottomActionModule.GetProperty("tag").GetString());
 
-        var button = bottomActionModule.GetProperty("columns")[0].GetProperty("elements")[0];
+        var buttonRow = bottomActionModule.GetProperty("elements")[0];
+        Assert.Equal("column_set", buttonRow.GetProperty("tag").GetString());
+
+        var input = buttonRow.GetProperty("columns")[0].GetProperty("elements")[0];
+        Assert.Equal("input", input.GetProperty("tag").GetString());
+        Assert.Equal(LowInterruptionContinueDefaults.PromptFieldName, input.GetProperty("name").GetString());
+        Assert.Equal(LowInterruptionContinueDefaults.DefaultPrompt, input.GetProperty("default_value").GetString());
+
+        var button = buttonRow.GetProperty("columns")[1].GetProperty("elements")[0];
         Assert.Equal("button", button.GetProperty("tag").GetString());
         Assert.Equal("primary", button.GetProperty("type").GetString());
         Assert.Equal("少打断执行", button.GetProperty("text").GetProperty("content").GetString());
-        Assert.Equal("low_interruption_continue", button.GetProperty("behaviors")[0].GetProperty("value").GetProperty("action").GetString());
+        Assert.Equal("form_submit", button.GetProperty("action_type").GetString());
+        Assert.Equal("low_interruption_continue", button.GetProperty("value").GetProperty("action").GetString());
     }
 
     [Fact]

@@ -427,6 +427,8 @@
                               LowInterruptionContinueMessageId="@CurrentLowInterruptionContinueEligibility.MessageId"
                               LowInterruptionContinueDisabled="@CurrentLowInterruptionContinueEligibility.IsDisabled"
                               LowInterruptionContinueText="少打断执行"
+                              LowInterruptionContinuePrompt="@_lowInterruptionContinuePrompt"
+                              LowInterruptionContinuePromptChanged="@((string value) => _lowInterruptionContinuePrompt = value)"
                               OnLowInterruptionContinue="StartLowInterruptionContinueAsync" />
 
         <ChatInputPanel UploadFileText="@T("codeAssistant.uploadFile")"

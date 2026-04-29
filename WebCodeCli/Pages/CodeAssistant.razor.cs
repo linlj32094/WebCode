@@ -1896,6 +1896,8 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
         };
     }
 
+    private string _lowInterruptionContinuePrompt = LowInterruptionContinueDefaults.DefaultPrompt;
+
     private LowInterruptionContinueEligibility CurrentLowInterruptionContinueEligibility =>
         LowInterruptionContinueHelper.Evaluate(
             _messages,
@@ -2158,6 +2160,7 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
             await foreach (var chunk in CliExecutorService.ExecuteLowInterruptionContinueStreamAsync(
                 _sessionId,
                 _selectedToolId,
+                _lowInterruptionContinuePrompt,
                 default))
             {
                 if (chunk.IsError)
@@ -2329,6 +2332,7 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
             var toolId = string.IsNullOrWhiteSpace(_selectedToolId) ? session?.ToolId : _selectedToolId;
             var workspacePath = session?.WorkspacePath ?? GetSafeWorkspacePath();
             var toolLabel = _availableTools.FirstOrDefault(tool => tool.Id == toolId)?.Name ?? toolId ?? "CLI";
+            var historyLimit = ResolveHistoryCommandLimit(message);
 
             if (string.IsNullOrWhiteSpace(toolId) || string.IsNullOrWhiteSpace(cliThreadId))
             {
@@ -2336,7 +2340,11 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
             }
             else
             {
-                var historyMessages = await ExternalCliSessionHistoryService.GetRecentMessagesAsync(toolId, cliThreadId, maxCount: 10);
+                var historyMessages = await ExternalCliSessionHistoryService.GetRecentMessagesAsync(
+                    toolId,
+                    cliThreadId,
+                    maxCount: historyLimit,
+                    workspacePath: workspacePath);
                 assistantMessage.Content = BuildExternalCliHistoryText(historyMessages, toolLabel, workspacePath);
             }
         }
@@ -2378,6 +2386,35 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
                || trimmed.StartsWith("/history ", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static int ResolveHistoryCommandLimit(string? message)
+    {
+        const int defaultLimit = 50;
+        const int maxLimit = 200;
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return defaultLimit;
+        }
+
+        var segments = message
+            .Trim()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 2)
+        {
+            return defaultLimit;
+        }
+
+        var requestedLimit = segments[1];
+        if (string.Equals(requestedLimit, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            return maxLimit;
+        }
+
+        return int.TryParse(requestedLimit, out var parsedLimit)
+            ? Math.Clamp(parsedLimit, 1, maxLimit)
+            : defaultLimit;
+    }
+
     private static string BuildExternalCliHistoryText(
         IReadOnlyList<ExternalCliHistoryMessage> messages,
         string toolLabel,
@@ -2395,7 +2432,10 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
             return builder.ToString().TrimEnd();
         }
 
-        foreach (var message in messages.TakeLast(10))
+        builder.AppendLine($"显示条数: 最近 {messages.Count} 条");
+        builder.AppendLine();
+
+        foreach (var message in messages)
         {
             var roleLabel = string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase) ? "用户" : "助手";
             if (message.CreatedAt.HasValue)

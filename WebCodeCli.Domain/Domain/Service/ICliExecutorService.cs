@@ -81,6 +81,7 @@ public interface ICliExecutorService
     IAsyncEnumerable<StreamOutputChunk> ExecuteLowInterruptionContinueStreamAsync(
         string sessionId,
         string toolId,
+        string? prompt = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
