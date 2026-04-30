@@ -152,6 +152,10 @@ public class FeishuCardActionService
                     return await HandleBackToListAsync(chatId);
                 case "execute_command":
                     return await HandleExecuteCommandAsync(formValueElement, action.Command, chatId, operatorUserId, inputValues, appId);
+                case FeishuHelpCardAction.SubmitSuperpowersQuickInputAction:
+                case FeishuHelpCardAction.ExecuteSuperpowersPlanAction:
+                case FeishuHelpCardAction.ExecuteSuperpowersSubagentPlanAction:
+                    return await HandleSuperpowersQuickActionAsync(action, formValueElement, chatId, operatorUserId, appId);
                 case LowInterruptionContinueHelper.ActionName:
                     return await HandleLowInterruptionContinueAsync(action.SessionId, action.ChatKey ?? chatId, action.ToolId, formValueElement, operatorUserId, appId);
                 case "switch_session":
@@ -459,6 +463,48 @@ public class FeishuCardActionService
         return toastResponse;
     }
 
+    private async Task<CardActionTriggerResponseDto> HandleSuperpowersQuickActionAsync(
+        FeishuHelpCardAction action,
+        JsonElement? formValue,
+        string? chatId,
+        string? operatorUserId,
+        string? appId)
+    {
+        var prompt = action.Action switch
+        {
+            FeishuHelpCardAction.SubmitSuperpowersQuickInputAction => SuperpowersPromptBuilder.BuildQuickSkillPrompt(
+                GetFormStringValue(formValue, SuperpowersQuickActionDefaults.QuickInputFieldName)),
+            FeishuHelpCardAction.ExecuteSuperpowersPlanAction => SuperpowersPromptBuilder.BuildExecutePlanPrompt(),
+            FeishuHelpCardAction.ExecuteSuperpowersSubagentPlanAction => SuperpowersPromptBuilder.BuildSubagentExecutePlanPrompt(),
+            _ => null
+        };
+
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("⚠️ 请输入命令", "warning");
+        }
+
+        var targetChatKey = action.ChatKey ?? chatId;
+        if (string.IsNullOrWhiteSpace(targetChatKey))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("❌ 缺少必要参数", "error");
+        }
+
+        var activeSessionId = action.SessionId ?? _feishuChannel.GetCurrentSession(NormalizeChatKey(targetChatKey));
+        if (!string.IsNullOrWhiteSpace(activeSessionId) && _feishuChannel.IsSessionExecutionActive(activeSessionId))
+        {
+            return _cardBuilder.BuildCardActionToastOnlyResponse("⚠️ 当前会话已有任务在执行，请等待完成后再试", "warning");
+        }
+
+        return await HandleExecuteCommandAsync(
+            formValue: null,
+            commandFromAction: prompt,
+            chatId: targetChatKey,
+            operatorUserId: operatorUserId,
+            inputValues: null,
+            appId: appId);
+    }
+
     private async Task<CardActionTriggerResponseDto> HandleLowInterruptionContinueAsync(
         string? sessionId,
         string? chatKey,
@@ -670,6 +716,7 @@ public class FeishuCardActionService
 
         using var statusPulseCts = new CancellationTokenSource();
         var pulseGate = new FeishuStreamingStatusPulseGate();
+        TryAttachSuperpowersQuickActions(streamingChrome, sessionId, tool.Id, chatId);
         PausePulseForOverflowCard(streamingChrome, pulseGate);
         var statusPulseTask = RunStreamingStatusPulseAsync(
             handle,
@@ -746,7 +793,7 @@ public class FeishuCardActionService
             statusPulseCts.Cancel();
             streamingChrome.StatusMarkdown = FeishuStreamingStatusFormatter.WithCompletedState(baseStatusMarkdown);
             SetTopChipGroupsEnabled(streamingChrome, true);
-            TryAttachLowInterruptionAction(streamingChrome, sessionId, tool.Id, chatId, hasStructuredTodoList, finalOutput, userPrompt);
+            TryAttachSuperpowersQuickActions(streamingChrome, sessionId, tool.Id, chatId);
             try
             {
                 // NOTE: 这条带会话标识的“已完成”普通文本通知不能删除。
@@ -904,7 +951,7 @@ public class FeishuCardActionService
             statusPulseCts.Cancel();
             streamingChrome.StatusMarkdown = FeishuStreamingStatusFormatter.WithCompletedState(baseStatusMarkdown);
             SetTopChipGroupsEnabled(streamingChrome, true);
-            TryAttachLowInterruptionAction(streamingChrome, sessionId, tool.Id, chatId, hasStructuredTodoList, finalOutput, recentUserContent: null);
+            TryAttachSuperpowersQuickActions(streamingChrome, sessionId, tool.Id, chatId);
 
             try
             {
@@ -952,39 +999,90 @@ public class FeishuCardActionService
         }
     }
 
-    private void TryAttachLowInterruptionAction(
+    private void TryAttachSuperpowersQuickActions(
         FeishuStreamingCardChrome streamingChrome,
         string sessionId,
         string toolId,
-        string chatId,
-        bool hasStructuredTodoList,
-        string finalOutput,
-        string? recentUserContent)
+        string chatId)
     {
-        var normalizedToolId = NormalizeToolId(toolId) ?? toolId;
-        var hasCliThreadId = !string.IsNullOrWhiteSpace(_cliExecutor.GetCliThreadId(sessionId));
-        var isToolSupported = !string.IsNullOrWhiteSpace(normalizedToolId)
-                              && _cliExecutor.SupportsLowInterruptionContinue(normalizedToolId);
-        var sessionContents = _chatSessionService.GetMessages(sessionId)
-            .Select(static message => message.Content)
-            .Append(recentUserContent);
-
-        if (!LowInterruptionContinueHelper.IsEligible(
-                finalOutput,
-                sessionContents,
-                hasStructuredTodoList,
-                isToolSupported,
-                hasCliThreadId,
-                isProcessRunning: false))
+        var normalizedChatKey = NormalizeChatKey(chatId);
+        if (string.IsNullOrWhiteSpace(normalizedChatKey))
         {
             return;
         }
 
-        streamingChrome.BottomActions.Clear();
-        streamingChrome.BottomPrompt = LowInterruptionContinueHelper.CreateBottomPrompt(
+        var normalizedToolId = NormalizeToolId(toolId) ?? toolId;
+        streamingChrome.BottomPrompt = SuperpowersQuickActionCardHelper.CreateBottomPrompt(
             sessionId,
-            NormalizeChatKey(chatId),
+            normalizedChatKey,
             normalizedToolId);
+        streamingChrome.BottomActions.Clear();
+        if (ShouldShowSuperpowersPlanActions(sessionId))
+        {
+            streamingChrome.BottomActions.AddRange(SuperpowersQuickActionCardHelper.CreateBottomActions(
+                sessionId,
+                normalizedChatKey,
+                normalizedToolId));
+        }
+    }
+
+    private bool ShouldShowSuperpowersPlanActions(string sessionId)
+    {
+        return SuperpowersQuickActionCardHelper.ShouldShowPlanActions(
+            _chatSessionService.GetMessages(sessionId).Select(static message => message?.Content),
+            HasSuperpowersPlanFiles(sessionId));
+    }
+
+    private bool HasSuperpowersPlanFiles(string sessionId)
+    {
+        var workspacePath = TryGetSessionWorkspacePath(sessionId);
+        if (string.IsNullOrWhiteSpace(workspacePath))
+        {
+            return false;
+        }
+
+        var planDirectory = Path.Combine(workspacePath, "docs", "superpowers", "plans");
+        try
+        {
+            return Directory.Exists(planDirectory)
+                   && Directory.EnumerateFiles(planDirectory, "*.md", SearchOption.TopDirectoryOnly).Any();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "检查 Superpowers 计划文件失败: SessionId={SessionId}", sessionId);
+            return false;
+        }
+    }
+
+    private string? TryGetSessionWorkspacePath(string sessionId)
+    {
+        try
+        {
+            return _cliExecutor.GetSessionWorkspacePath(sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "从 CLI 运行时读取工作区失败: SessionId={SessionId}", sessionId);
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<IChatSessionRepository>();
+            return repo.GetByIdAsync(sessionId).GetAwaiter().GetResult()?.WorkspacePath;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "从会话仓储读取工作区失败: SessionId={SessionId}", sessionId);
+            return null;
+        }
+    }
+
+    private static bool SessionContainsSuperpowers(IEnumerable<Domain.Model.ChatMessage> messages)
+    {
+        return messages.Any(message =>
+            !string.IsNullOrWhiteSpace(message?.Content)
+            && message.Content.Contains("superpowers", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task RunStreamingStatusPulseAsync(

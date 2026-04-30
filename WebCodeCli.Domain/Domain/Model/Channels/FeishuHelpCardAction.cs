@@ -8,6 +8,10 @@ namespace WebCodeCli.Domain.Domain.Model.Channels;
 /// </summary>
 public class FeishuHelpCardAction
 {
+    public const string SubmitSuperpowersQuickInputAction = "submit_superpowers_quick_input";
+    public const string ExecuteSuperpowersPlanAction = "execute_superpowers_plan";
+    public const string ExecuteSuperpowersSubagentPlanAction = "execute_superpowers_subagent_plan";
+
     /// <summary>
     /// 动作类型
     /// refresh_commands, select_command, back_to_list, execute_command

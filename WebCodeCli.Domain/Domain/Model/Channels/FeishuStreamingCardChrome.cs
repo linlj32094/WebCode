@@ -156,7 +156,7 @@ public sealed class FeishuStreamingCardBottomAction
 /// </summary>
 public sealed class FeishuStreamingCardBottomPrompt
 {
-    public string FormName { get; set; } = "low_interruption_continue_form";
+    public string FormName { get; set; } = "superpowers_quick_action_form";
 
     public string InputName { get; set; } = string.Empty;
 

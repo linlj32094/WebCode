@@ -772,15 +772,18 @@ public class FeishuChannelServiceTests
     }
 
     [Fact]
-    public async Task HandleIncomingMessageAsync_AttachesLowInterruptionButton_WhenFinalOutputContainsBacklog()
+    public async Task HandleIncomingMessageAsync_AttachesSuperpowersQuickActions_WhenPlanFilesExistAndSessionHistoryContainsSuperpowers()
     {
         var repository = CreateRepository(out var repositoryProxy);
         var sessionDirectoryService = new RecordingSessionDirectoryService(repositoryProxy);
         var cardKit = new StreamingRecordingFeishuCardKitClient();
         var chatSessionService = new RecordingChatSessionService();
-        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-low-interruption-{Guid.NewGuid():N}");
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-superpowers-footer-{Guid.NewGuid():N}");
         var workspacePath = Path.Combine(workspaceRoot, "superpowers");
-        Directory.CreateDirectory(workspacePath);
+        Directory.CreateDirectory(Path.Combine(workspacePath, "docs", "superpowers", "plans"));
+        await File.WriteAllTextAsync(
+            Path.Combine(workspacePath, "docs", "superpowers", "plans", "approved-plan.md"),
+            "# approved");
 
         const string sessionId = "33333333-low";
         repositoryProxy.Store(new ChatSessionEntity
@@ -797,9 +800,7 @@ public class FeishuChannelServiceTests
 
         var cliExecutor = new PromptCapturingCliExecutor(workspacePath)
         {
-            SupportsLowInterruption = true,
-            ReusableCliThreadId = "thread-low-interruption",
-            FinalContent = "backlog remains\n"
+            FinalContent = "计划已完成\n"
         };
 
         var serviceProvider = new TestServiceProvider(
@@ -824,6 +825,16 @@ public class FeishuChannelServiceTests
 
         try
         {
+            chatSessionService.Messages[sessionId] =
+            [
+                new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = "可以继续用superpowers技能推进",
+                    IsCompleted = true
+                }
+            ];
+
             await service.HandleIncomingMessageAsync(new FeishuIncomingMessage
             {
                 ChatId = "oc_low_interrupt_chat",
@@ -835,15 +846,110 @@ public class FeishuChannelServiceTests
             var handle = Assert.Single(cardKit.Handles);
             Assert.NotNull(handle.Chrome);
             var chrome = handle.Chrome!;
-            var bottomAction = Assert.Single(chrome.BottomActions);
+            Assert.NotNull(chrome.BottomPrompt);
+            Assert.Equal(SuperpowersQuickActionDefaults.QuickInputFieldName, chrome.BottomPrompt!.InputName);
+            Assert.Equal(SuperpowersQuickActionDefaults.InstructionText, chrome.BottomPrompt.InputLabel);
 
-            Assert.Equal("少打断执行", bottomAction.Text);
+            var quickInputJson = JsonSerializer.Serialize(chrome.BottomPrompt.Value);
+            Assert.Contains($"\"action\":\"{FeishuHelpCardAction.SubmitSuperpowersQuickInputAction}\"", quickInputJson);
+            Assert.Contains($"\"session_id\":\"{sessionId}\"", quickInputJson);
+            Assert.Contains("\"chat_key\":\"oc_low_interrupt_chat\"", quickInputJson);
+            Assert.Contains("\"tool_id\":\"codex\"", quickInputJson);
 
-            var valueJson = JsonSerializer.Serialize(bottomAction.Value);
-            Assert.Contains("\"action\":\"low_interruption_continue\"", valueJson);
-            Assert.Contains($"\"session_id\":\"{sessionId}\"", valueJson);
-            Assert.Contains("\"chat_key\":\"oc_low_interrupt_chat\"", valueJson);
-            Assert.Contains("\"tool_id\":\"codex\"", valueJson);
+            Assert.Equal(2, chrome.BottomActions.Count);
+            Assert.Contains(chrome.BottomActions, action => action.Text == SuperpowersQuickActionDefaults.ExecutePlanButtonText);
+            Assert.Contains(chrome.BottomActions, action => action.Text == SuperpowersQuickActionDefaults.ExecuteSubagentPlanButtonText);
+            Assert.Contains(
+                $"\"action\":\"{FeishuHelpCardAction.ExecuteSuperpowersPlanAction}\"",
+                JsonSerializer.Serialize(
+                    Assert.Single(chrome.BottomActions, action => action.Text == SuperpowersQuickActionDefaults.ExecutePlanButtonText).Value),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"\"action\":\"{FeishuHelpCardAction.ExecuteSuperpowersSubagentPlanAction}\"",
+                JsonSerializer.Serialize(
+                    Assert.Single(chrome.BottomActions, action => action.Text == SuperpowersQuickActionDefaults.ExecuteSubagentPlanButtonText).Value),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(workspaceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task HandleIncomingMessageAsync_AttachesQuickInputButHidesPlanActions_WhenWorkspaceHasNoPlanFiles()
+    {
+        var repository = CreateRepository(out var repositoryProxy);
+        var sessionDirectoryService = new RecordingSessionDirectoryService(repositoryProxy);
+        var cardKit = new StreamingRecordingFeishuCardKitClient();
+        var chatSessionService = new RecordingChatSessionService();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"feishu-superpowers-no-plan-{Guid.NewGuid():N}");
+        var workspacePath = Path.Combine(workspaceRoot, "superpowers");
+        Directory.CreateDirectory(workspacePath);
+
+        const string sessionId = "33333333-no-plan";
+        repositoryProxy.Store(new ChatSessionEntity
+        {
+            SessionId = sessionId,
+            Username = "luhaiyan",
+            WorkspacePath = workspacePath,
+            ToolId = "codex",
+            FeishuChatKey = "oc_low_interrupt_chat",
+            IsFeishuActive = true,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-10),
+            UpdatedAt = DateTime.UtcNow
+        });
+
+        var cliExecutor = new PromptCapturingCliExecutor(workspacePath)
+        {
+            FinalContent = "计划已完成\n"
+        };
+
+        var serviceProvider = new TestServiceProvider(
+            repository,
+            sessionDirectoryService,
+            new StubFeishuUserBindingService(),
+            new StubUserFeishuBotConfigService(),
+            new StubUserContextService());
+
+        var service = new FeishuChannelService(
+            Options.Create(new FeishuOptions
+            {
+                Enabled = true,
+                AppId = "cli_test",
+                AppSecret = "secret"
+            }),
+            NullLogger<FeishuChannelService>.Instance,
+            cardKit,
+            serviceProvider,
+            cliExecutor,
+            chatSessionService);
+
+        try
+        {
+            chatSessionService.Messages[sessionId] =
+            [
+                new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = "可以继续用superpowers技能推进",
+                    IsCompleted = true
+                }
+            ];
+
+            await service.HandleIncomingMessageAsync(new FeishuIncomingMessage
+            {
+                ChatId = "oc_low_interrupt_chat",
+                SenderName = "luhaiyan",
+                MessageId = "msg-no-plan",
+                Content = "继续"
+            });
+
+            var handle = Assert.Single(cardKit.Handles);
+            Assert.NotNull(handle.Chrome);
+            Assert.NotNull(handle.Chrome!.BottomPrompt);
+            Assert.Equal(SuperpowersQuickActionDefaults.QuickInputFieldName, handle.Chrome.BottomPrompt!.InputName);
+            Assert.Empty(handle.Chrome.BottomActions);
         }
         finally
         {

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Components;
+﻿using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
@@ -429,56 +429,44 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         };
     }
 
-    private string _lowInterruptionContinuePrompt = LowInterruptionContinueDefaults.DefaultPrompt;
+    private string _superpowersQuickInput = string.Empty;
 
-    private LowInterruptionContinueEligibility CurrentLowInterruptionContinueEligibility =>
-        LowInterruptionContinueHelper.Evaluate(
+    private SuperpowersQuickActionEligibility CurrentSuperpowersQuickActionEligibility =>
+        SuperpowersQuickActionHelper.Evaluate(
             _messages,
-            hasStructuredTodoList: HasStructuredTodoListForLatestCompletedAssistant(),
-            isToolSupported: SupportsLowInterruptionContinue(),
-            hasCliThreadId: HasReusableCliThreadId(),
+            hasSuperpowersPlanFiles: HasSuperpowersPlanFiles(),
             isProcessRunning: _isLoading);
 
-    private bool HasStructuredTodoListInCurrentOutput()
+    private bool HasSuperpowersPlanFiles()
     {
-        return _jsonlEvents.Any(static evt =>
-            string.Equals(evt.ItemType, "todo_list", StringComparison.OrdinalIgnoreCase));
+        try
+        {
+            var workspacePath = CliExecutorService.GetSessionWorkspacePath(_sessionId)
+                               ?? _currentSession?.WorkspacePath;
+
+            if (string.IsNullOrWhiteSpace(workspacePath) || !Directory.Exists(workspacePath))
+            {
+                return false;
+            }
+
+            var superpowersPlanPath = Path.Combine(workspacePath, "docs", "superpowers", "plans");
+            return Directory.Exists(superpowersPlanPath)
+                && Directory.EnumerateFiles(superpowersPlanPath, "*.md").Any();
+        }
+        catch
+        {
+            return false;
+        }
     }
 
-    private bool HasStructuredTodoListForLatestCompletedAssistant()
+    private static bool IsSuperpowersQuickActionEligible(ChatMessage message, SuperpowersQuickActionEligibility eligibility)
     {
-        return _isLoading
-            ? _latestCompletedAssistantHasStructuredTodoList
-            : HasStructuredTodoListInCurrentOutput();
-    }
-
-    private void CaptureLatestCompletedAssistantStructuredTodoList()
-    {
-        _latestCompletedAssistantHasStructuredTodoList = HasStructuredTodoListInCurrentOutput();
-    }
-
-    private bool SupportsLowInterruptionContinue()
-    {
-        return !string.IsNullOrWhiteSpace(_selectedToolId)
-            && CliExecutorService.SupportsLowInterruptionContinue(_selectedToolId);
-    }
-
-    private bool HasReusableCliThreadId()
-    {
-        var cliThreadId = CliExecutorService.GetCliThreadId(_sessionId)
-                          ?? _currentSession?.CliThreadId
-                          ?? _activeThreadId;
-
-        return !string.IsNullOrWhiteSpace(cliThreadId);
-    }
-
-    private static bool IsLowInterruptionContinueEligible(ChatMessage message, LowInterruptionContinueEligibility eligibility)
-    {
-        return LowInterruptionContinueHelper.IsMessageEligible(message, eligibility);
+        return SuperpowersQuickActionHelper.IsMessageEligible(message, eligibility);
     }
     
     #endregion
     
+    #if false
     private async Task SendMessage()
     {
         if (string.IsNullOrWhiteSpace(_inputMessage) || _isLoading)
@@ -777,6 +765,228 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
         }
     }
 
+    #endif
+
+    private Task SendMessage()
+    {
+        return SendMessageCoreAsync(_inputMessage, clearComposerInput: true, closeTransientPanels: true);
+    }
+
+    private async Task SendMessageCoreAsync(
+        string? rawMessage,
+        bool clearComposerInput,
+        bool closeTransientPanels)
+    {
+        if (string.IsNullOrWhiteSpace(rawMessage) || _isLoading)
+            return;
+
+        var userMessage = rawMessage.Trim();
+        if (clearComposerInput)
+        {
+            _inputMessage = string.Empty;
+        }
+
+        if (closeTransientPanels)
+        {
+            _showQuickActions = false;
+            _showSkillPicker = false;
+        }
+
+        var selectedTool = _availableTools.FirstOrDefault(t => t.Id == _selectedToolId);
+        InitializeJsonlState(IsJsonlTool(selectedTool));
+
+        if (_isJsonlOutputActive && _progressTracker != null)
+        {
+            _progressTracker.Start();
+        }
+
+        _messages.Add(new ChatMessage
+        {
+            Role = "user",
+            Content = userMessage,
+            CreatedAt = DateTime.Now,
+            CliToolId = _selectedToolId,
+            IsCompleted = true
+        });
+
+        _isLoading = true;
+        _currentAssistantMessage = string.Empty;
+        StateHasChanged();
+
+        await ScrollToBottom();
+
+        if (await TryHandleHistoryCommandAsync(userMessage))
+        {
+            _isLoading = false;
+            _currentAssistantMessage = string.Empty;
+            StateHasChanged();
+            await ScrollToBottom();
+            await SaveCurrentSession();
+            return;
+        }
+
+        var contentBuilder = new StringBuilder();
+
+        try
+        {
+            await foreach (var chunk in CliExecutorService.ExecuteStreamAsync(
+                _sessionId,
+                _selectedToolId,
+                userMessage))
+            {
+                if (chunk.IsError)
+                {
+                    _messages.Add(new ChatMessage
+                    {
+                        Role = "assistant",
+                        Content = string.Empty,
+                        HasError = true,
+                        ErrorMessage = chunk.ErrorMessage ?? chunk.Content,
+                        CreatedAt = DateTime.Now,
+                        CliToolId = _selectedToolId,
+                        IsCompleted = true
+                    });
+                    break;
+                }
+                else if (chunk.IsCompleted)
+                {
+                    if (_isJsonlOutputActive)
+                    {
+                        ProcessJsonlChunk(string.Empty, flush: true);
+                        var finalJsonlContent = GetJsonlAssistantMessage();
+                        _currentAssistantMessage = finalJsonlContent;
+                        contentBuilder.Clear();
+                        contentBuilder.Append(finalJsonlContent);
+                        UpdateOutputRaw(finalJsonlContent);
+                    }
+
+                    var finalContent = contentBuilder.ToString();
+                    if (!string.IsNullOrEmpty(finalContent))
+                    {
+                        _messages.Add(new ChatMessage
+                        {
+                            Role = "assistant",
+                            Content = finalContent,
+                            CreatedAt = DateTime.Now,
+                            CliToolId = _selectedToolId,
+                            IsCompleted = true
+                        });
+                    }
+                    break;
+                }
+                else
+                {
+                    var chunkContent = chunk.Content ?? string.Empty;
+                    if (_isJsonlOutputActive)
+                    {
+                        ProcessJsonlChunk(chunkContent, flush: false);
+                        var liveContent = GetJsonlAssistantMessage();
+                        _currentAssistantMessage = liveContent;
+                        UpdateOutputRaw(liveContent);
+                    }
+                    else
+                    {
+                        contentBuilder.Append(chunkContent);
+                        _currentAssistantMessage = contentBuilder.ToString();
+                        UpdateOutputRaw(_currentAssistantMessage);
+                    }
+
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _messages.Add(new ChatMessage
+            {
+                Role = "assistant",
+                Content = string.Empty,
+                HasError = true,
+                ErrorMessage = $"{T("codeAssistant.errorOccurred")}: {ex.Message}",
+                CreatedAt = DateTime.Now,
+                CliToolId = _selectedToolId,
+                IsCompleted = true
+            });
+        }
+        finally
+        {
+            if (_isJsonlOutputActive)
+            {
+                ProcessJsonlChunk(string.Empty, flush: true);
+                _currentAssistantMessage = GetJsonlAssistantMessage();
+
+                if (_progressTracker != null)
+                {
+                    if (_messages.LastOrDefault()?.HasError == true)
+                    {
+                        _progressTracker.Fail(_messages.LastOrDefault()?.ErrorMessage ?? T("codeAssistant.errorOccurred"));
+                    }
+                    else
+                    {
+                        _progressTracker.Complete();
+                    }
+                }
+            }
+
+            _isLoading = false;
+            _currentAssistantMessage = string.Empty;
+            StateHasChanged();
+            await ScrollToBottom();
+            await SaveCurrentSession();
+        }
+    }
+
+    private async Task OnSubmitSuperpowersQuickInputAsync(ChatMessage sourceMessage)
+    {
+        await SubmitSuperpowersQuickActionAsync(sourceMessage, SuperpowersQuickActionRequestType.QuickInput);
+    }
+
+    private async Task OnExecuteSuperpowersPlanAsync(ChatMessage sourceMessage)
+    {
+        await SubmitSuperpowersQuickActionAsync(sourceMessage, SuperpowersQuickActionRequestType.ExecutePlan);
+    }
+
+    private async Task OnExecuteSuperpowersSubagentPlanAsync(ChatMessage sourceMessage)
+    {
+        await SubmitSuperpowersQuickActionAsync(sourceMessage, SuperpowersQuickActionRequestType.ExecuteSubagentPlan);
+    }
+
+    private async Task SubmitSuperpowersQuickActionAsync(
+        ChatMessage sourceMessage,
+        SuperpowersQuickActionRequestType requestType)
+    {
+        var eligibility = CurrentSuperpowersQuickActionEligibility;
+        if (_isLoading
+            || eligibility.IsDisabled
+            || !IsSuperpowersQuickActionEligible(sourceMessage, eligibility))
+        {
+            return;
+        }
+
+        var message = SuperpowersQuickActionSubmissionHelper.BuildMessage(requestType, _superpowersQuickInput);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        if (requestType == SuperpowersQuickActionRequestType.QuickInput)
+        {
+            _superpowersQuickInput = string.Empty;
+        }
+
+        await SendMessageCoreAsync(message, clearComposerInput: false, closeTransientPanels: true);
+    }
+
+    private async Task HandleSuperpowersQuickInputKeyDown(ChatMessage message, KeyboardEventArgs args)
+    {
+        if (!string.Equals(args.Key, "Enter", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await OnSubmitSuperpowersQuickInputAsync(message);
+    }
+
     private async Task<bool> TryHandleHistoryCommandAsync(string message)
     {
         if (!IsHistoryCommand(message))
@@ -1005,7 +1215,6 @@ public partial class CodeAssistantMobile : ComponentBase, IAsyncDisposable
     private readonly List<JsonlDisplayItem> _jsonlEvents = new();
     private bool _isJsonlOutputActive = false;
     private string _activeThreadId = string.Empty;
-    private bool _latestCompletedAssistantHasStructuredTodoList = false;
     private string _rawOutput = string.Empty;
     private bool _disposed = false;
     private string _jsonlPendingBuffer = string.Empty;

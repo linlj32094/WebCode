@@ -9,7 +9,7 @@ public static class SuperpowersQuickActionHelper
         bool hasSuperpowersPlanFiles,
         bool isProcessRunning)
     {
-        if (!hasSuperpowersPlanFiles || messages == null || messages.Count == 0 || !SessionContainsSuperpowers(messages))
+        if (messages == null || messages.Count == 0)
         {
             return SuperpowersQuickActionEligibility.Hidden;
         }
@@ -27,13 +27,14 @@ public static class SuperpowersQuickActionHelper
 
         return new SuperpowersQuickActionEligibility(
             MessageId: latestCompletedAssistant.Id,
-            ShowQuickActions: true,
+            ShowQuickInput: true,
+            ShowPlanActions: hasSuperpowersPlanFiles && SessionContainsSuperpowers(messages),
             IsDisabled: isProcessRunning);
     }
 
     public static bool IsMessageEligible(ChatMessage? message, SuperpowersQuickActionEligibility eligibility)
     {
-        if (!eligibility.ShowQuickActions || message == null)
+        if (!eligibility.ShowQuickInput || message == null)
         {
             return false;
         }
@@ -54,8 +55,9 @@ public static class SuperpowersQuickActionHelper
 
 public readonly record struct SuperpowersQuickActionEligibility(
     string? MessageId,
-    bool ShowQuickActions,
+    bool ShowQuickInput,
+    bool ShowPlanActions,
     bool IsDisabled)
 {
-    public static SuperpowersQuickActionEligibility Hidden => new(null, false, false);
+    public static SuperpowersQuickActionEligibility Hidden => new(null, false, false, false);
 }

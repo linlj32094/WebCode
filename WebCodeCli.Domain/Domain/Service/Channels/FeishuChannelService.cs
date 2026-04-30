@@ -683,6 +683,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             sessionId,
             useAdapter);
 
+        TryAttachSuperpowersQuickActions(activeExecution.Chrome, sessionId, tool.Id);
         try
         {
             // 鎵ц CLI 宸ュ叿骞舵祦寮忓鐞嗚緭鍑?
@@ -779,7 +780,7 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             activeExecution.CancelPulse();
             activeExecution.SetCompletedStatus();
             SetTopChipGroupsEnabled(activeExecution.Chrome, true);
-            TryAttachLowInterruptionAction(activeExecution.Chrome, sessionId, tool.Id, hasStructuredTodoList, finalOutput, userPrompt);
+            TryAttachSuperpowersQuickActions(activeExecution.Chrome, sessionId, tool.Id);
             // NOTE: Keep the explicit completion text notification for Feishu users.
             try
             {
@@ -1240,22 +1241,11 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
         }
     }
 
-    private void TryAttachLowInterruptionAction(
+    private void TryAttachSuperpowersQuickActions(
         FeishuStreamingCardChrome chrome,
         string sessionId,
-        string toolId,
-        bool hasStructuredTodoList,
-        string finalOutput,
-        string? recentUserContent)
+        string toolId)
     {
-        var normalizedToolId = NormalizeToolId(toolId) ?? toolId;
-        var hasCliThreadId = !string.IsNullOrWhiteSpace(_cliExecutor.GetCliThreadId(sessionId));
-        var isToolSupported = !string.IsNullOrWhiteSpace(normalizedToolId)
-                              && _cliExecutor.SupportsLowInterruptionContinue(normalizedToolId);
-        var sessionContents = _chatSessionService.GetMessages(sessionId)
-            .Select(static message => message.Content)
-            .Append(recentUserContent);
-
         string? chatKey = null;
         using (var scope = _serviceProvider.CreateScope())
         {
@@ -1264,23 +1254,83 @@ public class FeishuChannelService : BackgroundService, IFeishuChannelService
             chatKey = session?.FeishuChatKey;
         }
 
-        if (string.IsNullOrWhiteSpace(chatKey)
-            || !LowInterruptionContinueHelper.IsEligible(
-                finalOutput,
-                sessionContents,
-                hasStructuredTodoList,
-                isToolSupported,
-                hasCliThreadId,
-                isProcessRunning: false))
+        if (string.IsNullOrWhiteSpace(chatKey))
         {
             return;
         }
 
-        chrome.BottomActions.Clear();
-        chrome.BottomActions.Add(LowInterruptionContinueHelper.CreateBottomAction(
+        var normalizedToolId = NormalizeToolId(toolId) ?? toolId;
+        chrome.BottomPrompt = SuperpowersQuickActionCardHelper.CreateBottomPrompt(
             sessionId,
             chatKey,
-            normalizedToolId));
+            normalizedToolId);
+        chrome.BottomActions.Clear();
+        if (ShouldShowSuperpowersPlanActions(sessionId))
+        {
+            chrome.BottomActions.AddRange(SuperpowersQuickActionCardHelper.CreateBottomActions(
+                sessionId,
+                chatKey,
+                normalizedToolId));
+        }
+    }
+
+    private bool ShouldShowSuperpowersPlanActions(string sessionId)
+    {
+        return SuperpowersQuickActionCardHelper.ShouldShowPlanActions(
+            _chatSessionService.GetMessages(sessionId).Select(static message => message?.Content),
+            HasSuperpowersPlanFiles(sessionId));
+    }
+
+    private bool HasSuperpowersPlanFiles(string sessionId)
+    {
+        var workspacePath = TryGetSessionWorkspacePath(sessionId);
+        if (string.IsNullOrWhiteSpace(workspacePath))
+        {
+            return false;
+        }
+
+        var planDirectory = Path.Combine(workspacePath, "docs", "superpowers", "plans");
+        try
+        {
+            return Directory.Exists(planDirectory)
+                   && Directory.EnumerateFiles(planDirectory, "*.md", SearchOption.TopDirectoryOnly).Any();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "检查 Superpowers 计划文件失败: SessionId={SessionId}", sessionId);
+            return false;
+        }
+    }
+
+    private string? TryGetSessionWorkspacePath(string sessionId)
+    {
+        try
+        {
+            return _cliExecutor.GetSessionWorkspacePath(sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "从 CLI 运行时读取工作区失败: SessionId={SessionId}", sessionId);
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<IChatSessionRepository>();
+            return repo.GetByIdAsync(sessionId).GetAwaiter().GetResult()?.WorkspacePath;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "从会话仓储读取工作区失败: SessionId={SessionId}", sessionId);
+            return null;
+        }
+    }
+
+    private static bool SessionContainsSuperpowers(IEnumerable<ChatMessage> messages)
+    {
+        return messages.Any(message =>
+            !string.IsNullOrWhiteSpace(message?.Content)
+            && message.Content.Contains("superpowers", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task RunStreamingStatusPulseAsync(ActiveSessionExecution execution)

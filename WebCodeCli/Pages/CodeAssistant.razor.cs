@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Components;
+﻿using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
@@ -72,7 +72,6 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
     private bool _isJsonlOutputActive = false;
     private string _jsonlPendingBuffer = string.Empty;
     private string _activeThreadId = string.Empty;
-    private bool _latestCompletedAssistantHasStructuredTodoList = false;
     private StringBuilder? _jsonlAssistantMessageBuilder;
 
     // 输出结果（Tab=输出结果）持久化
@@ -1896,63 +1895,58 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
         };
     }
 
-    private string _lowInterruptionContinuePrompt = LowInterruptionContinueDefaults.DefaultPrompt;
+    private string _superpowersQuickInput = string.Empty;
 
-    private LowInterruptionContinueEligibility CurrentLowInterruptionContinueEligibility =>
-        LowInterruptionContinueHelper.Evaluate(
+    private SuperpowersQuickActionEligibility CurrentSuperpowersQuickActionEligibility =>
+        SuperpowersQuickActionHelper.Evaluate(
             _messages,
-            hasStructuredTodoList: HasStructuredTodoListForLatestCompletedAssistant(),
-            isToolSupported: SupportsLowInterruptionContinue(),
-            hasCliThreadId: HasReusableCliThreadId(),
+            hasSuperpowersPlanFiles: HasSuperpowersPlanFiles(),
             isProcessRunning: _isLoading);
 
-    private bool HasStructuredTodoListInCurrentOutput()
+    private bool HasSuperpowersPlanFiles()
     {
-        return _jsonlEvents.Any(static evt =>
-            string.Equals(evt.ItemType, "todo_list", StringComparison.OrdinalIgnoreCase));
+        try
+        {
+            var workspacePath = CliExecutorService.GetSessionWorkspacePath(_sessionId)
+                               ?? _currentSession?.WorkspacePath;
+
+            if (string.IsNullOrWhiteSpace(workspacePath) || !Directory.Exists(workspacePath))
+            {
+                return false;
+            }
+
+            var superpowersPlanPath = Path.Combine(workspacePath, "docs", "superpowers", "plans");
+            return Directory.Exists(superpowersPlanPath)
+                && Directory.EnumerateFiles(superpowersPlanPath, "*.md").Any();
+        }
+        catch
+        {
+            return false;
+        }
     }
 
-    private bool HasStructuredTodoListForLatestCompletedAssistant()
+    private Task SendMessage()
     {
-        return _isLoading
-            ? _latestCompletedAssistantHasStructuredTodoList
-            : HasStructuredTodoListInCurrentOutput();
+        return SendMessageCoreAsync(_inputMessage, clearComposerInput: true);
     }
 
-    private void CaptureLatestCompletedAssistantStructuredTodoList()
+    private async Task SendMessageCoreAsync(string? rawMessage, bool clearComposerInput)
     {
-        _latestCompletedAssistantHasStructuredTodoList = HasStructuredTodoListInCurrentOutput();
-    }
-
-    private bool SupportsLowInterruptionContinue()
-    {
-        return !string.IsNullOrWhiteSpace(_selectedToolId)
-            && CliExecutorService.SupportsLowInterruptionContinue(_selectedToolId);
-    }
-
-    private bool HasReusableCliThreadId()
-    {
-        var cliThreadId = CliExecutorService.GetCliThreadId(_sessionId)
-                          ?? _currentSession?.CliThreadId
-                          ?? _activeThreadId;
-
-        return !string.IsNullOrWhiteSpace(cliThreadId);
-    }
-
-    private async Task SendMessage()
-    {
-        if (string.IsNullOrWhiteSpace(_inputMessage) || _isLoading)
+        if (string.IsNullOrWhiteSpace(rawMessage) || _isLoading)
         {
             return;
         }
 
-        var message = _inputMessage.Trim();
-        _inputMessage = string.Empty;
+        var message = rawMessage.Trim();
+        if (clearComposerInput)
+        {
+            _inputMessage = string.Empty;
+        }
+
         _isLoading = true;
         _currentAssistantMessage = string.Empty;
 
         var selectedTool = _availableTools.FirstOrDefault(t => t.Id == _selectedToolId);
-        CaptureLatestCompletedAssistantStructuredTodoList();
         InitializeJsonlState(IsJsonlTool(selectedTool));
 
         // 启动进度追踪器
@@ -2121,6 +2115,7 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
         }
     }
 
+    #if false
     private async Task StartLowInterruptionContinueAsync(ChatMessage sourceMessage)
     {
         var eligibility = CurrentLowInterruptionContinueEligibility;
@@ -2265,6 +2260,49 @@ public partial class CodeAssistant : ComponentBase, IAsyncDisposable
             await ScrollToBottom();
             await SaveCurrentSessionAsync();
         }
+    }
+
+    #endif
+
+    private async Task OnSubmitSuperpowersQuickInputAsync(ChatMessage sourceMessage)
+    {
+        await SubmitSuperpowersQuickActionAsync(sourceMessage, SuperpowersQuickActionRequestType.QuickInput);
+    }
+
+    private async Task OnExecuteSuperpowersPlanAsync(ChatMessage sourceMessage)
+    {
+        await SubmitSuperpowersQuickActionAsync(sourceMessage, SuperpowersQuickActionRequestType.ExecutePlan);
+    }
+
+    private async Task OnExecuteSuperpowersSubagentPlanAsync(ChatMessage sourceMessage)
+    {
+        await SubmitSuperpowersQuickActionAsync(sourceMessage, SuperpowersQuickActionRequestType.ExecuteSubagentPlan);
+    }
+
+    private async Task SubmitSuperpowersQuickActionAsync(
+        ChatMessage sourceMessage,
+        SuperpowersQuickActionRequestType requestType)
+    {
+        var eligibility = CurrentSuperpowersQuickActionEligibility;
+        if (_isLoading
+            || eligibility.IsDisabled
+            || !SuperpowersQuickActionHelper.IsMessageEligible(sourceMessage, eligibility))
+        {
+            return;
+        }
+
+        var message = SuperpowersQuickActionSubmissionHelper.BuildMessage(requestType, _superpowersQuickInput);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        if (requestType == SuperpowersQuickActionRequestType.QuickInput)
+        {
+            _superpowersQuickInput = string.Empty;
+        }
+
+        await SendMessageCoreAsync(message, clearComposerInput: false);
     }
 
     private Task UpdatePreview(string content)

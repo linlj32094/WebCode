@@ -1,12 +1,13 @@
 using WebCodeCli.Domain.Domain.Model;
 using WebCodeCli.Helpers;
+using Xunit;
 
 namespace WebCodeCli.Tests;
 
 public sealed class SuperpowersQuickActionHelperTests
 {
     [Fact]
-    public void Evaluate_HidesQuickActions_WhenWorkspaceHasNoPlanFiles()
+    public void Evaluate_ShowsQuickInputButHidesPlanActions_WhenWorkspaceHasNoPlanFiles()
     {
         var messages = new List<ChatMessage>
         {
@@ -19,12 +20,13 @@ public sealed class SuperpowersQuickActionHelperTests
             hasSuperpowersPlanFiles: false,
             isProcessRunning: false);
 
-        Assert.False(result.ShowQuickActions);
-        Assert.Null(result.MessageId);
+        Assert.True(result.ShowQuickInput);
+        Assert.False(result.ShowPlanActions);
+        Assert.Equal("a1", result.MessageId);
     }
 
     [Fact]
-    public void Evaluate_HidesQuickActions_WhenSessionHistoryHasNoSuperpowersSignal()
+    public void Evaluate_ShowsQuickInputButHidesPlanActions_WhenSessionHistoryHasNoSuperpowersSignal()
     {
         var messages = new List<ChatMessage>
         {
@@ -37,8 +39,9 @@ public sealed class SuperpowersQuickActionHelperTests
             hasSuperpowersPlanFiles: true,
             isProcessRunning: false);
 
-        Assert.False(result.ShowQuickActions);
-        Assert.Null(result.MessageId);
+        Assert.True(result.ShowQuickInput);
+        Assert.False(result.ShowPlanActions);
+        Assert.Equal("a1", result.MessageId);
     }
 
     [Fact]
@@ -59,7 +62,8 @@ public sealed class SuperpowersQuickActionHelperTests
             hasSuperpowersPlanFiles: true,
             isProcessRunning: false);
 
-        Assert.True(result.ShowQuickActions);
+        Assert.True(result.ShowQuickInput);
+        Assert.True(result.ShowPlanActions);
         Assert.False(result.IsDisabled);
         Assert.Equal(latestAssistant.Id, result.MessageId);
         Assert.True(SuperpowersQuickActionHelper.IsMessageEligible(latestAssistant, result));
@@ -76,7 +80,8 @@ public sealed class SuperpowersQuickActionHelperTests
             hasSuperpowersPlanFiles: true,
             isProcessRunning: true);
 
-        Assert.True(result.ShowQuickActions);
+        Assert.True(result.ShowQuickInput);
+        Assert.True(result.ShowPlanActions);
         Assert.True(result.IsDisabled);
         Assert.Equal(latestAssistant.Id, result.MessageId);
     }
