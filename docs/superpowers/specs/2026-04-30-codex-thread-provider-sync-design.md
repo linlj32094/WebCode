@@ -65,6 +65,7 @@ For a Codex session sync request:
 7. Persist the updated session snapshot metadata and return a sync summary.
 
 The sync target is the current session-local Codex copy, not the user's global `~/.codex` directory.
+The rewrite target is the current `cc-switch` active provider, even if the session snapshot currently points at a different provider.
 
 ### Thread Resolution
 
