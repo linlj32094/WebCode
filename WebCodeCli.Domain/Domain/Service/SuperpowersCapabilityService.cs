@@ -112,6 +112,21 @@ public sealed class SuperpowersCapabilityService : ISuperpowersCapabilityService
     private readonly ILogger<SuperpowersCapabilityService> _logger;
     private readonly Func<string> _userProfileResolver;
 
+    // Capability probe is a user-facing diagnostic. Log both via ILogger and Console
+    // so results are visible in console-hosted scenarios.
+    private void LogProbe(string message)
+    {
+        _logger.LogInformation("{Message}", message);
+        try
+        {
+            Console.WriteLine($"[superpowers-probe] {message}");
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
     public SuperpowersCapabilityService(
         ICcSwitchService ccSwitchService,
         ILogger<SuperpowersCapabilityService> logger)
@@ -154,12 +169,18 @@ public sealed class SuperpowersCapabilityService : ISuperpowersCapabilityService
         var resolvedContext = await ResolveContextAsync(context, cancellationToken);
         if (!forceRefresh && _cache.TryGetValue(resolvedContext.CacheKey, out var cached))
         {
+            LogProbe(
+                $"cache hit: ToolId={resolvedContext.ToolId}, ProviderId={resolvedContext.ProviderId}, CacheKey={resolvedContext.CacheKey}, State={cached.State}");
             return cached.ToProbeResult(fromCache: true);
         }
 
         try
         {
+            LogProbe(
+                $"start: ToolId={resolvedContext.ToolId}, ProviderId={resolvedContext.ProviderId}, CacheKey={resolvedContext.CacheKey}, Workspace={resolvedContext.WorkspacePath ?? "<null>"}, forceRefresh={forceRefresh}");
             var result = ProbeCore(resolvedContext);
+            LogProbe(
+                $"result: ToolId={result.ToolId}, ProviderId={result.ProviderId}, State={result.State}, Outcome={result.Outcome}, HasPlugin={result.HasSuperpowersPlugin}, UsedSkillFallback={result.UsedSkillFallback}, MissingSkills={result.MissingSkills.Count}");
             if (result.State == SuperpowersCapabilityState.Available
                 || result.State == SuperpowersCapabilityState.Unavailable)
             {
@@ -198,6 +219,7 @@ public sealed class SuperpowersCapabilityService : ISuperpowersCapabilityService
     {
         if (!IsSupportedTool(context.ToolId))
         {
+            LogProbe($"unsupported tool: ToolId={context.ToolId}");
             return new SuperpowersCapabilityProbeResult
             {
                 ToolId = context.ToolId,
@@ -210,8 +232,10 @@ public sealed class SuperpowersCapabilityService : ISuperpowersCapabilityService
         }
 
         var pluginRoots = ResolvePluginRoots(context.ToolId, context.WorkspacePath);
+        LogProbe($"scan plugin roots: [{string.Join("; ", pluginRoots)}]");
         var pluginScanResult = TryFindSuperpowersPluginManifest(pluginRoots);
         var pluginManifestPath = pluginScanResult.ManifestPath;
+        LogProbe($"plugin manifest: {(string.IsNullOrWhiteSpace(pluginManifestPath) ? "<not found>" : pluginManifestPath)} (hadReadError={pluginScanResult.HadReadError})");
         if (!string.IsNullOrWhiteSpace(pluginManifestPath))
         {
             _logger.LogInformation(
@@ -232,12 +256,20 @@ public sealed class SuperpowersCapabilityService : ISuperpowersCapabilityService
         }
 
         var skillRoots = ResolveSkillRoots(context.ToolId, context.WorkspacePath);
+        LogProbe($"scan skill roots: [{string.Join("; ", skillRoots)}]");
         var skillScanResult = LoadSkillNames(skillRoots);
         var installedSkills = skillScanResult.SkillNames;
         var missingSkills = RequiredSkillNames
             .Where(required => !installedSkills.Contains(required))
             .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+        LogProbe(
+            $"skills scanned: installed={installedSkills.Count}, missing={missingSkills.Length}, hadReadError(skill={skillScanResult.HadReadError})");
+        if (missingSkills.Length > 0)
+        {
+            LogProbe($"missing skills: {string.Join(", ", missingSkills)}");
+        }
 
         if (missingSkills.Length > 0 && (pluginScanResult.HadReadError || skillScanResult.HadReadError))
         {
