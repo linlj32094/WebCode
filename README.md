@@ -126,7 +126,7 @@ WebCode 现在遵循“像终端窗口一样”的会话语义：
 适合试用、内网部署和小团队使用。
 
 ```bash
-git clone https://github.com/lusile2024/WebCode.git
+git clone https://github.com/shuyu-labs/WebCode.git
 cd WebCode
 docker compose up -d
 ```
@@ -147,7 +147,7 @@ docker compose up -d
 
 下载入口：
 
-- [GitHub Releases](https://github.com/lusile2024/WebCode/releases/latest)
+- [GitHub Releases](https://github.com/shuyu-labs/WebCode/releases/latest)
 
 当前 Windows 发布资产包括：
 
@@ -181,7 +181,7 @@ docker compose up -d
 #### 启动命令
 
 ```bash
-git clone https://github.com/lusile2024/WebCode.git
+git clone https://github.com/shuyu-labs/WebCode.git
 cd WebCode
 dotnet restore
 dotnet run --project WebCodeCli
